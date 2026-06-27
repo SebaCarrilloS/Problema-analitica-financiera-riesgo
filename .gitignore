@@ -1,0 +1,59 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Variables de entorno y credenciales
+.env
+.env.*
+*.key
+*.pem
+credentials/
+secrets/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Datos crudos, procesados y exportaciones pesadas
+data/raw/*
+data/processed/*
+data/database/*
+data/exports/*
+
+# Mantener estructura de carpetas en Git
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/database/.gitkeep
+!data/exports/.gitkeep
+
+# Bases DuckDB locales
+*.duckdb
+*.duckdb.wal
+
+# Modelos entrenados
+models/*
+!models/.gitkeep
+*.joblib
+*.pkl
+
+# Salidas temporales de reportes
+reports/*.html
+reports/*.pdf
+reports/*.docx
+
+# Archivos temporales de Power BI
+powerbi/*.tmp
+powerbi/*.bak
+
+# Logs
+logs/
+*.log

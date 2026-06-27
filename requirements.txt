@@ -1,0 +1,16 @@
+pandas
+numpy
+duckdb
+jupyter
+ipykernel
+matplotlib
+plotly
+scikit-learn
+xgboost
+lightgbm
+shap
+pandera
+joblib
+pyarrow
+openpyxl
+python-dotenv
