@@ -18,6 +18,9 @@ __pycache__/
 *.pem
 credentials/
 secrets/
+kaggle.json
+access_token
+.kaggle/
 
 # Archivos del sistema
 .DS_Store
