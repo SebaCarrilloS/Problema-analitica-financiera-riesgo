@@ -1,0 +1,178 @@
+---
+title: "Fase 0 — Alcance del Proyecto"
+subtitle: "Analítica financiera de riesgo, rentabilidad y control de gestión"
+author: "Sebastián Carrillo"
+format: html
+lang: es
+---
+
+# Introducción
+
+Este proyecto tiene como objetivo construir una solución analítica avanzada para una organización financiera ficticia. El caso simula una empresa con múltiples filiales, productos, canales comerciales, sucursales, ejecutivos y segmentos de clientes.
+
+La gerencia necesita monitorear desempeño financiero, rentabilidad, morosidad, riesgo, crecimiento, eficiencia operativa y cumplimiento de metas. Actualmente los datos se encuentran dispersos, presentan problemas de calidad y no existe una capa analítica confiable para apoyar la toma de decisiones.
+
+# Historia de negocio
+
+La organización financiera ficticia, denominada provisionalmente **FinanciaCorp**, opera con distintas unidades comerciales y productos financieros. Su crecimiento reciente ha generado una mayor complejidad en el análisis de desempeño.
+
+El principal problema es que no basta con saber cuánto crece la cartera o cuánto vende cada filial. La gerencia necesita distinguir entre crecimiento sano y crecimiento riesgoso.
+
+Una filial puede cumplir metas comerciales, pero al mismo tiempo generar baja rentabilidad, alta mora o deterioro de cartera. Por lo tanto, el análisis debe integrar indicadores financieros, comerciales, operacionales y de riesgo.
+
+# Problema central
+
+La pregunta principal del proyecto es:
+
+> ¿Dónde está creciendo la organización de forma rentable, dónde está asumiendo riesgo excesivo y qué acciones debería tomar la gerencia?
+
+Esta pregunta conecta el análisis de datos con decisiones ejecutivas reales.
+
+# Objetivo general
+
+Construir una solución analítica reproducible que permita consolidar, limpiar, transformar, modelar y analizar información financiera y operacional, integrando SQL, Python, DuckDB, Quarto, Machine Learning y Power BI.
+
+# Objetivos específicos
+
+Los objetivos específicos del proyecto son:
+
+1. Consolidar datos reales y sintéticos en una arquitectura local basada en DuckDB.
+2. Simular una arquitectura analítica por capas.
+3. Construir tablas analíticas mediante SQL avanzado.
+4. Diseñar métricas financieras y operacionales relevantes para gerencia.
+5. Implementar validaciones de calidad de datos.
+6. Entrenar un modelo de Machine Learning para estimar probabilidad de mora o dificultad de pago.
+7. Integrar el resultado del modelo en tablas finales para Power BI.
+8. Documentar el proyecto con Quarto de forma profesional y reproducible.
+9. Preparar una defensa técnica del proyecto para entrevistas laborales.
+
+# Arquitectura analítica propuesta
+
+El proyecto simula una arquitectura tipo data warehouse local usando DuckDB.
+
+Las capas principales son:
+
+| Capa | Propósito |
+|---|---|
+| raw_data | Almacenar datos crudos tal como llegan desde la fuente. |
+| std_data | Estandarizar nombres, tipos de datos, fechas, categorías y formatos. |
+| cst_data | Aplicar reglas de negocio y construir entidades analíticas curadas. |
+| mart_financiero | Crear tablas finales para análisis, Power BI y modelos. |
+| data_quality | Registrar validaciones, errores y score de calidad de datos. |
+
+# Enfoque de datos
+
+El proyecto usará un enfoque híbrido.
+
+## Datos reales
+
+Se utilizará un dataset real de riesgo crediticio, idealmente Home Credit Default Risk o una alternativa equivalente, para trabajar con comportamiento financiero, pagos, historial crediticio y mora.
+
+## Datos sintéticos
+
+Se generarán datos corporativos ficticios para simular una estructura financiera interna:
+
+- filiales;
+- sucursales;
+- ejecutivos;
+- canales;
+- productos gerenciales;
+- segmentos;
+- metas comerciales;
+- costos operacionales;
+- presupuestos;
+- asignación de cartera.
+
+# Preguntas ejecutivas
+
+El proyecto buscará responder preguntas como:
+
+- ¿Qué filiales están destruyendo valor?
+- ¿Qué productos son más rentables?
+- ¿Dónde está aumentando el riesgo?
+- ¿Qué segmentos concentran la mora?
+- ¿Qué canales generan mejor desempeño?
+- ¿Qué filiales cumplen metas, pero con baja rentabilidad?
+- ¿Dónde hay crecimiento sano versus crecimiento riesgoso?
+- ¿Qué clientes o contratos deberían priorizarse?
+- ¿Qué variables explican la mora o el deterioro?
+- ¿Qué acciones debería tomar la gerencia?
+
+# Métricas principales
+
+Algunas métricas relevantes serán:
+
+- ingresos financieros;
+- costos operacionales;
+- margen operacional;
+- margen porcentual;
+- rentabilidad por filial;
+- rentabilidad por producto;
+- tasa de mora;
+- monto en mora;
+- clientes en riesgo;
+- crecimiento mensual;
+- variación contra presupuesto;
+- cumplimiento de metas;
+- ratio costo/ingreso;
+- concentración de cartera;
+- evolución de saldos.
+
+# Machine Learning
+
+El modelo principal del proyecto será una estimación de probabilidad de mora o dificultad de pago.
+
+El modelo deberá estar conectado con la toma de decisiones. No será un componente aislado, sino una salida analítica que podrá integrarse al dashboard ejecutivo y a las tablas finales del mart financiero.
+
+# Alcance
+
+El proyecto incluirá:
+
+- ingesta de datos;
+- limpieza y estandarización;
+- validaciones de calidad;
+- modelamiento SQL por capas;
+- análisis financiero;
+- análisis de mora;
+- análisis de cumplimiento de metas;
+- modelo ML de riesgo;
+- tablas finales para Power BI;
+- documentación reproducible;
+- preparación para entrevistas.
+
+# Fuera de alcance inicial
+
+No se considerará en esta primera versión:
+
+- despliegue productivo en cloud;
+- orquestación empresarial completa;
+- conexión a sistemas bancarios reales;
+- datos personales reales;
+- automatización en tiempo real;
+- gobierno de datos corporativo completo.
+
+# Riesgos y limitaciones
+
+Los principales riesgos del proyecto son:
+
+- diferencias entre los datos sintéticos y un entorno financiero real;
+- posible simplificación de reglas de negocio;
+- riesgo de leakage en el modelo de Machine Learning;
+- interpretación incorrecta de variables crediticias;
+- sobreajuste del modelo predictivo;
+- dificultad de representar todos los procesos reales de una organización financiera.
+
+# Recomendaciones iniciales
+
+Para mantener el proyecto en un nivel profesional se recomienda:
+
+1. Priorizar SQL como eje del modelamiento analítico.
+2. Documentar las decisiones técnicas en Quarto.
+3. Versionar cambios por fase usando Git.
+4. Separar datos crudos, datos transformados y tablas finales.
+5. No construir modelos sin conexión clara con decisiones de negocio.
+6. Mantener trazabilidad entre origen de datos, transformación y resultado ejecutivo.
+
+# Estado de la fase
+
+La Fase 0 queda definida como el marco conceptual del proyecto. Las siguientes fases construirán la infraestructura técnica, la carga de datos, las validaciones, el modelamiento SQL, el análisis financiero, el modelo de riesgo y los entregables finales.

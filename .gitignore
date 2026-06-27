@@ -49,6 +49,9 @@ models/*
 reports/*.html
 reports/*.pdf
 reports/*.docx
+reports/**/*.html
+reports/**/*.pdf
+reports/**/*.docx
 
 # Archivos temporales de Power BI
 powerbi/*.tmp
@@ -57,3 +60,5 @@ powerbi/*.bak
 # Logs
 logs/
 *.log
+/.quarto/
+**/*.quarto_ipynb

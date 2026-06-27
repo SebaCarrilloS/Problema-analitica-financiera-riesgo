@@ -1,0 +1,15 @@
+project:
+  type: default
+  output-dir: reports
+
+format:
+  html:
+    toc: true
+    number-sections: true
+    theme: cosmo
+    lang: es
+
+execute:
+  echo: true
+  warning: false
+  message: false
