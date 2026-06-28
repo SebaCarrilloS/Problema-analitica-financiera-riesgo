@@ -1,0 +1,192 @@
+---
+title: "Calidad de Datos y Capa Curada"
+lang: es
+format:
+  html:
+    toc: true
+    number-sections: true
+---
+
+# Objetivo del documento
+
+Este documento resume el trabajo realizado sobre la calidad, estandarización y curaduría inicial de los datos del proyecto de analítica financiera y riesgo.
+
+El objetivo de esta etapa fue avanzar desde datos crudos hacia una base analítica más confiable, preparada para análisis de riesgo, control de gestión financiero, modelamiento SQL, Power BI y modelos predictivos.
+
+# Flujo trabajado
+
+El flujo construido hasta esta etapa fue:
+
+`raw_data` → `std_data` → `data_quality` → `cst_data`
+
+Cada capa cumple un propósito distinto:
+
+* `raw_data`: datos crudos, cargados con mínima intervención.
+* `std_data`: datos estandarizados, con tipos definidos y nombres más legibles.
+* `data_quality`: diagnósticos y hallazgos de calidad.
+* `cst_data`: datos curados e integrados para análisis.
+
+# Capa `std_data`
+
+La capa `std_data` fue creada a partir de las vistas crudas disponibles en `raw_data`.
+
+En esta capa se aplicaron las siguientes decisiones:
+
+* uso de nombres en español, `snake_case`, sin tildes ni caracteres especiales;
+* conversión de columnas clave a tipos adecuados;
+* uso de `CAST` para campos críticos;
+* uso de `TRY_CAST` para variables analíticas;
+* creación de tablas físicas para tablas centrales;
+* creación de vistas para dimensiones pequeñas.
+
+Las tablas físicas creadas fueron:
+
+* `std_data.application_train`
+* `std_data.application_test`
+* `std_data.fact_asignacion_cartera`
+
+Las dimensiones corporativas quedaron como vistas:
+
+* `std_data.dim_filial`
+* `std_data.dim_sucursal`
+* `std_data.dim_ejecutivo`
+* `std_data.dim_producto`
+* `std_data.dim_canal`
+* `std_data.dim_segmento`
+
+Esta decisión permite mantener materializadas las tablas centrales del proyecto y dejar como vistas las tablas descriptivas de menor tamaño.
+
+# Validación de `std_data`
+
+Se creó una validación para revisar que la capa `std_data` fuera consistente antes de avanzar.
+
+La validación revisó:
+
+* existencia de objetos en `std_data`;
+* tipo de objeto esperado, tabla física o vista;
+* conteo de filas contra `raw_data`;
+* presencia de columnas requeridas;
+* ausencia de nulos en `id_cliente`;
+* validez de `flag_dificultad_pago`;
+* ausencia de duplicados en `id_cliente`.
+
+El resultado de la validación fue exitoso, sin errores ni advertencias.
+
+# Perfilamiento de calidad
+
+Después de validar la estructura de `std_data`, se realizó un perfilamiento de calidad sobre las tablas principales.
+
+Se generaron perfiles de:
+
+* nulos por columna;
+* variables numéricas;
+* variables categóricas;
+* distribución de la variable objetivo;
+* comparación de nulos entre train y test;
+* control de asignación de cartera.
+
+Los resultados fueron guardados tanto en el schema `data_quality` como en archivos CSV dentro de `data/processed/data_quality/`.
+
+# Principales hallazgos de calidad
+
+Los hallazgos más relevantes fueron documentados en la tabla:
+
+`data_quality.hallazgos_calidad_std`
+
+Los principales hallazgos fueron:
+
+* la variable objetivo `flag_dificultad_pago` está desbalanceada;
+* `score_externo_1` tiene alto porcentaje de nulos y diferencia relevante entre train y test;
+* `score_externo_3` tiene nulos relevantes;
+* `ocupacion` tiene un porcentaje importante de datos faltantes;
+* `antiguedad_auto_anios` tiene muchos nulos, posiblemente asociados a clientes sin auto;
+* `dias_empleo_relativo` contiene el valor especial `365243`;
+* `ingreso_total` presenta valores extremos;
+* existen categorías raras como `XNA` en género y `Unknown` en estado civil;
+* la asignación de cartera no presenta problemas estructurales relevantes.
+
+Estos hallazgos no bloquean el avance, pero deben considerarse en las siguientes capas analíticas y en el modelamiento predictivo.
+
+# Capa `cst_data`
+
+Luego de revisar la calidad de `std_data`, se creó una primera tabla curada integrada:
+
+`cst_data.cartera_clientes_train`
+
+Esta tabla une información de clientes, riesgo crediticio, asignación de cartera y dimensiones corporativas.
+
+La tabla integra:
+
+* información crediticia del cliente;
+* variable objetivo de dificultad de pago;
+* asignación a filial, sucursal, ejecutivo, producto, canal y segmento;
+* variables derivadas;
+* tratamientos analíticos de problemas conocidos.
+
+# Tratamientos aplicados en `cst_data`
+
+En la capa curada se aplicaron tratamientos analíticos iniciales.
+
+Entre ellos:
+
+* `genero = XNA` fue tratado como `Sin informacion`;
+* `estado_civil = Unknown` fue tratado como `Sin informacion`;
+* ocupación nula o vacía fue tratada como `Sin informacion`;
+* `dias_empleo_relativo = 365243` fue marcado con un flag especial;
+* la antigüedad laboral se calculó solo cuando el valor era interpretable;
+* se crearon flags para scores externos nulos;
+* se creó un score promedio externo cuando existían scores disponibles.
+
+# Variables derivadas creadas
+
+La tabla `cst_data.cartera_clientes_train` incluye variables derivadas como:
+
+* `edad_anios`;
+* `grupo_edad`;
+* `antiguedad_laboral_anios`;
+* `flag_empleo_valor_especial`;
+* `tramo_ingreso`;
+* `tramo_monto_credito`;
+* `ratio_credito_ingreso`;
+* `ratio_anualidad_ingreso`;
+* `ratio_credito_bien`;
+* `cantidad_scores_disponibles`;
+* `score_promedio_externo`;
+* flags de nulos para scores externos.
+
+Estas variables dejan la tabla mejor preparada para análisis financiero, segmentación, KPIs, Power BI y modelamiento de riesgo.
+
+# Validación de `cst_data`
+
+Se creó una validación específica para `cst_data.cartera_clientes_train`.
+
+La validación revisó:
+
+* existencia de la tabla;
+* conteo de filas contra `std_data.application_train`;
+* ausencia de duplicados en `id_cliente`;
+* presencia de columnas requeridas;
+* asignación corporativa completa;
+* cruces completos con dimensiones;
+* validez de la variable objetivo;
+* rango razonable de edad;
+* tratamiento correcto del valor especial de empleo;
+* ausencia de ratios negativos;
+* score promedio externo dentro de rango 0 a 1.
+
+La validación terminó con cero errores y una advertencia.
+
+La advertencia corresponde a productos con `familia_producto = Sin informacion`, lo que proviene de los problemas controlados inyectados en los datos sintéticos. Este hallazgo queda documentado y no bloquea el avance.
+
+# Estado final de la etapa
+
+Al cierre de esta etapa, el proyecto cuenta con:
+
+* una capa `std_data` creada y validada;
+* perfilamiento de calidad en `data_quality`;
+* hallazgos de calidad documentados;
+* una tabla curada integrada en `cst_data`;
+* validación de la tabla curada;
+* trazabilidad mediante scripts SQL, Python y Git.
+
+La siguiente etapa será construir resúmenes analíticos para responder preguntas de negocio por filial, producto, canal y segmento.
