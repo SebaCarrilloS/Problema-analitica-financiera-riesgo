@@ -32,6 +32,10 @@ data/processed/*
 data/database/*
 data/exports/*
 
+# Datos sintéticos generados
+data/synthetic/corporate/*
+!data/synthetic/corporate/.gitkeep
+
 # Mantener estructura de carpetas en Git
 !data/raw/.gitkeep
 !data/processed/.gitkeep
