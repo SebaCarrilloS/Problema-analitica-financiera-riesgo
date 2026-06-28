@@ -69,3 +69,6 @@ logs/
 *.log
 /.quarto/
 **/*.quarto_ipynb
+
+# Archivos auxiliares generados por Quarto
+reports/**/*_files/
