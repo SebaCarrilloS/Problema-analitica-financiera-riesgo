@@ -1,0 +1,104 @@
+# Cierre de la Fase 2
+
+Durante esta fase se incorporaron las fuentes principales del proyecto: un dataset real de riesgo crediticio y datos sintéticos corporativos para simular una organización financiera.
+
+## Dataset real
+
+Se seleccionó **Home Credit Default Risk** como dataset real principal. Esta fuente permite trabajar con múltiples tablas relacionadas, comportamiento crediticio, solicitudes, pagos, historial financiero y variable objetivo de riesgo.
+
+Los datos fueron descargados mediante Kaggle API y almacenados localmente en `data/raw/home_credit/`.
+
+Los archivos descargados no se versionan en Git, ya que corresponden a datos crudos pesados.
+
+## Diagnóstico inicial de Home Credit
+
+Se creó un diagnóstico reproducible para inspeccionar los archivos de Home Credit, revisando:
+
+* nombre del archivo;
+* tamaño en MB;
+* total de filas;
+* total de columnas;
+* encoding usado;
+* primeras columnas.
+
+El diagnóstico permitió detectar problemas reales de lectura, como diferencias de codificación entre archivos. Esto obligó a robustecer el script usando distintos encodings.
+
+## Capa raw de Home Credit
+
+Se crearon vistas en DuckDB dentro del schema `raw_data`, apuntando directamente a los CSV originales.
+
+La decisión técnica fue usar vistas sobre los CSV y cargar las columnas como texto en la capa raw. La tipificación formal se realizará posteriormente en `std_data`.
+
+Las vistas principales creadas fueron:
+
+* `raw_data.application_train`
+* `raw_data.application_test`
+* `raw_data.bureau`
+* `raw_data.bureau_balance`
+* `raw_data.credit_card_balance`
+* `raw_data.installments_payments`
+* `raw_data.pos_cash_balance`
+* `raw_data.previous_application`
+* `raw_data.sample_submission`
+
+El archivo `HomeCredit_columns_description.csv` se dejó fuera de las vistas principales, ya que será tratado como metadata de documentación.
+
+## Validación de raw_data
+
+Se implementó una validación intermedia de las vistas raw para revisar:
+
+* existencia de vistas;
+* conteo de filas;
+* conteo de columnas;
+* presencia de columnas clave;
+* presencia de `TARGET` en train;
+* ausencia de `TARGET` en test;
+* duplicados en llaves principales esperadas.
+
+La validación terminó sin errores estructurales.
+
+## Datos sintéticos corporativos
+
+Se generaron datos sintéticos corporativos con escala media:
+
+* 6 filiales;
+* 25 sucursales;
+* 100 ejecutivos;
+* 7 productos;
+* 5 canales;
+* 6 segmentos;
+* 24 meses.
+
+Los datos sintéticos permiten simular control de gestión financiero, metas comerciales, costos operacionales y asignación de cartera.
+
+## Problemas controlados
+
+Se inyectaron problemas moderados de calidad de datos para simular condiciones realistas:
+
+* productos sin familia gerencial;
+* costos negativos;
+* metas faltantes;
+* ejecutivos inactivos con cartera asignada;
+* nombres inconsistentes de sucursal.
+
+Estos problemas fueron tratados como advertencias controladas, no como errores estructurales.
+
+## Vistas raw de datos sintéticos
+
+Los datos sintéticos también fueron expuestos en DuckDB como vistas dentro de `raw_data`.
+
+Esto permite que tanto el dataset real como los datos corporativos sintéticos estén disponibles mediante SQL para las siguientes fases del proyecto.
+
+## Estado final de la fase
+
+La Fase 2 queda cerrada con:
+
+* datos reales descargados;
+* datos sintéticos generados;
+* diagnósticos iniciales creados;
+* validaciones ejecutadas;
+* vistas raw disponibles en DuckDB;
+* datos pesados excluidos de Git;
+* scripts versionados y reproducibles.
+
+La siguiente fase será la estandarización de datos en `std_data`.
