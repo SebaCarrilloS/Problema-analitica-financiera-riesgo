@@ -107,6 +107,20 @@ Los principales hallazgos fueron:
 
 Estos hallazgos no bloquean el avance, pero deben considerarse en las siguientes capas analíticas y en el modelamiento predictivo.
 
+Ajuste de asignación sintética de segmentos
+
+Durante la revisión de las vistas ejecutivas de riesgo se detectó que el segmento SEG_005, correspondiente a Riesgo Alto, presentaba una tasa de dificultad de pago de 100%.
+
+Este comportamiento indicaba que la asignación sintética del segmento estaba demasiado asociada a la variable objetivo flag_dificultad_pago. Aunque esto no representaba un error técnico de SQL, sí podía generar una señal artificial en los análisis posteriores.
+
+Para corregirlo, se ajustó la función de generación sintética de segmentos. El objetivo fue que SEG_005 siguiera representando un segmento de mayor riesgo, pero sin quedar determinado de forma perfecta por la variable objetivo.
+
+Después del ajuste, la tasa de dificultad de pago de SEG_005 disminuyó desde 100% a aproximadamente 46,30%.
+
+Este cambio permite mantener una señal de riesgo diferenciada por segmento, pero evita que el segmento revele directamente la respuesta observada.
+
+Como criterio para etapas posteriores, las variables de segmento deberán revisarse cuidadosamente antes de ser utilizadas como predictores en modelos de machine learning.
+
 # Capa `cst_data`
 
 Luego de revisar la calidad de `std_data`, se creó una primera tabla curada integrada:
