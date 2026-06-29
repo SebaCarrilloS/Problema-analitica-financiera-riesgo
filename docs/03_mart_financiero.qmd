@@ -1,0 +1,140 @@
+---
+title: "Mart Financiero"
+lang: es
+format:
+  html:
+    toc: true
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Objetivo
+
+Este documento inicia la construcción del `mart_financiero` del proyecto.
+
+El objetivo es revisar las métricas ejecutivas ya disponibles en `cst_data`, definir qué indicadores serán oficiales y luego llevar esas definiciones a tablas finales para análisis financiero y Power BI.
+
+# Enfoque de trabajo
+
+La construcción del mart seguirá este flujo:
+
+`cst_data` → exploración en Quarto → definición de métricas → tablas en `mart_financiero`
+
+En esta primera versión usaremos Quarto para consultar DuckDB desde Python y revisar los resultados antes de escribir el SQL definitivo.
+
+# Configuración inicial
+
+```{python}
+#| label: setup
+#| echo: true
+
+from pathlib import Path
+import sys
+
+import duckdb
+import pandas as pd
+```
+
+Este primer bloque carga las librerías necesarias.
+
+- `duckdb` permite consultar la base local del proyecto.
+- `pandas` permite mostrar los resultados como tablas.
+- `Path` y `sys` ayudan a ubicar correctamente la raíz del proyecto.
+
+# Ubicar la raíz del proyecto
+
+```{python}
+#| label: project-root
+#| echo: true
+
+PROJECT_ROOT = Path.cwd()
+
+if not (PROJECT_ROOT / "src").exists():
+    PROJECT_ROOT = PROJECT_ROOT.parent
+
+sys.path.append(str(PROJECT_ROOT))
+
+PROJECT_ROOT
+```
+
+Este bloque busca la carpeta principal del proyecto.
+
+La idea es que Quarto pueda encontrar el módulo `src.config`, aunque el documento esté dentro de la carpeta `docs`.
+
+# Conectar con DuckDB
+
+```{python}
+#| label: connect-duckdb
+#| echo: true
+
+from src.config import DATABASE_PATH
+
+con = duckdb.connect(DATABASE_PATH)
+
+DATABASE_PATH
+```
+
+Este bloque abre una conexión a la base DuckDB del proyecto.
+
+# Revisar objetos disponibles en `cst_data`
+
+```{python}
+#| label: inspect-cst-data
+#| echo: true
+
+query = """
+SELECT
+    table_schema,
+    table_name,
+    table_type
+FROM information_schema.tables
+WHERE table_schema = 'cst_data'
+ORDER BY table_name;
+"""
+
+objetos_cst = con.execute(query).fetchdf()
+objetos_cst
+```
+
+Esta consulta permite revisar qué tablas y vistas están disponibles en `cst_data`.
+
+# Resumen ejecutivo general
+
+```{python}
+#| label: resumen-general
+#| echo: true
+
+query = """
+SELECT
+    COUNT(*) AS total_clientes,
+    SUM(flag_dificultad_pago) AS clientes_con_dificultad_pago,
+    ROUND(SUM(flag_dificultad_pago) * 100.0 / COUNT(*), 2) AS tasa_dificultad_pago_pct,
+    ROUND(SUM(monto_credito), 2) AS exposicion_credito_total,
+    ROUND(SUM(CASE WHEN flag_dificultad_pago = 1 THEN monto_credito ELSE 0 END), 2) AS monto_en_riesgo_observado,
+    ROUND(
+        SUM(CASE WHEN flag_dificultad_pago = 1 THEN monto_credito ELSE 0 END)
+        * 100.0 / NULLIF(SUM(monto_credito), 0),
+        2
+    ) AS porcentaje_exposicion_en_riesgo,
+    ROUND(AVG(ratio_credito_ingreso), 4) AS ratio_credito_ingreso_promedio,
+    ROUND(AVG(score_promedio_externo), 4) AS score_externo_promedio
+FROM cst_data.cartera_clientes_train;
+"""
+
+resumen_general = con.execute(query).fetchdf()
+resumen_general
+```
+
+Esta tabla será la primera candidata para convertirse en una tabla oficial del `mart_financiero`.
+
+# Cerrar conexión
+
+```{python}
+#| label: close-connection
+#| echo: true
+
+con.close()
+```
