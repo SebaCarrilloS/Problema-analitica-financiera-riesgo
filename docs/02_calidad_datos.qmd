@@ -192,6 +192,65 @@ La validación terminó con cero errores y una advertencia.
 
 La advertencia corresponde a productos con `familia_producto = Sin informacion`, lo que proviene de los problemas controlados inyectados en los datos sintéticos. Este hallazgo queda documentado y no bloquea el avance.
 
+# Lectura ejecutiva final de riesgo
+
+Después de crear las vistas ejecutivas de gestión de riesgo, se realizó una revisión final de los principales resultados por filial, producto, canal y segmento.
+
+Resumen general de cartera
+
+La cartera analizada contiene 307.511 clientes, de los cuales 24.825 presentan dificultad de pago. Esto representa una tasa observada de dificultad de pago de 8,07%.
+
+La exposición total de crédito asciende aproximadamente a 184.207 millones, mientras que el monto observado en riesgo corresponde aproximadamente a 13.847 millones. Esto representa un 7,52% de la exposición total.
+
+Estos indicadores permiten establecer una línea base ejecutiva para analizar riesgo, exposición y concentración de cartera.
+
+Riesgo por filial
+
+Las diferencias de riesgo por filial son relativamente moderadas. Las tasas de dificultad de pago se ubican aproximadamente entre 7,94% y 8,22%.
+
+La Filial Digital presenta la mayor tasa observada de dificultad de pago, mientras que la Filial Austral concentra la mayor exposición crediticia total.
+
+Esto muestra que el riesgo porcentual y la exposición total no necesariamente coinciden en la misma unidad de negocio.
+
+Riesgo por producto
+
+El análisis por producto muestra diferencias mucho más marcadas.
+
+Los productos con mayor tasa de dificultad de pago son:
+
+Avance en Efectivo;
+Refinanciamiento.
+
+Ambos presentan tasas cercanas al 16%, muy por encima del promedio general de cartera.
+
+Esto sugiere que el producto es una dimensión clave para explicar diferencias de riesgo observado. En comparación, las diferencias por filial y canal son más suaves.
+
+Riesgo por canal
+
+Las tasas de dificultad de pago por canal son relativamente similares, ubicándose aproximadamente entre 8,03% y 8,15%.
+
+Esto indica que, en esta primera lectura, el canal no concentra diferencias tan fuertes de riesgo como el producto o el segmento.
+
+Riesgo por segmento
+
+Después del ajuste realizado en la generación sintética, el segmento SEG_005, correspondiente a Riesgo Alto, dejó de presentar una tasa artificial de 100% de dificultad de pago.
+
+La tasa final observada para este segmento quedó aproximadamente en 46,30%.
+
+Esto mantiene al segmento como un grupo claramente más riesgoso, pero evita que revele de forma perfecta la variable objetivo.
+
+El resto de los segmentos presenta tasas más moderadas, destacando que los segmentos Preferente y Alto Valor tienen tasas menores en comparación con el segmento de Riesgo Alto.
+
+Conclusión ejecutiva
+
+La cartera presenta una tasa general de dificultad de pago de 8,07%. Sin embargo, el riesgo no se distribuye de manera uniforme entre dimensiones.
+
+La mayor diferenciación aparece por producto y segmento. En particular, Avance en Efectivo, Refinanciamiento y el segmento Riesgo Alto concentran niveles superiores de riesgo observado.
+
+Las diferencias por filial y canal existen, pero son más moderadas.
+
+Esta lectura permite orientar las siguientes etapas del proyecto hacia la construcción de marts financieros, indicadores ejecutivos y visualizaciones en Power BI.
+
 # Estado final de la etapa
 
 Al cierre de esta etapa, el proyecto cuenta con:
