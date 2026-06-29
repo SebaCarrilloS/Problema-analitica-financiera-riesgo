@@ -1,0 +1,128 @@
+---
+title: "Cierre Fase 4: Mart Financiero"
+lang: es
+format:
+    html:
+        toc: true
+        number-sections: true
+---
+
+# Objetivo de la fase
+
+El objetivo de esta fase fue construir una capa final de análisis llamada `mart_financiero`, orientada a control de gestión, análisis ejecutivo y futura conexión con Power BI.
+
+Esta capa toma como base la información curada e integrada en `cst_data` y genera tablas finales con métricas oficiales de cartera, riesgo y exposición crediticia.
+
+# Flujo de trabajo
+
+El flujo trabajado en esta fase fue:
+
+`cst_data` → exploración en Quarto → definición de métricas → tablas en `mart_financiero` → validación → exportación para Power BI
+
+La exploración inicial se realizó en Quarto para revisar resultados generales, por filial y por producto. Luego, las definiciones relevantes fueron llevadas a scripts SQL formales.
+
+# Tablas creadas en `mart_financiero`
+
+Durante esta fase se crearon las siguientes tablas:
+
+| Tabla                              | Descripción                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------ |
+| `mart_financiero.resumen_general`  | Resumen global de la cartera.                                                  |
+| `mart_financiero.resumen_filial`   | Indicadores de riesgo y exposición por filial.                                 |
+| `mart_financiero.resumen_producto` | Indicadores de riesgo, exposición y margen aproximado por producto financiero. |
+| `mart_financiero.resumen_canal`    | Indicadores de riesgo y exposición por canal de atención.                      |
+| `mart_financiero.resumen_segmento` | Indicadores de riesgo y exposición por segmento de cliente.                    |
+
+Estas tablas representan una capa más estable y ejecutiva que las vistas exploratorias disponibles en `cst_data`.
+
+# Métricas principales
+
+Las métricas oficiales consideradas en esta primera versión del mart fueron:
+
+* total de clientes;
+* clientes con dificultad de pago;
+* tasa de dificultad de pago;
+* exposición crediticia total;
+* monto observado en riesgo;
+* porcentaje de exposición en riesgo;
+* ratio promedio crédito/ingreso;
+* score externo promedio;
+* margen esperado aproximado, cuando aplica;
+* ranking de riesgo;
+* ranking de exposición.
+
+Estas métricas permiten analizar la cartera desde distintas dimensiones de negocio.
+
+# Scripts SQL creados
+
+Los scripts SQL formales de esta fase fueron:
+
+| Script                                                  | Tabla generada                     |
+| ------------------------------------------------------- | ---------------------------------- |
+| `sql/04_mart_financiero/01_create_resumen_general.sql`  | `mart_financiero.resumen_general`  |
+| `sql/04_mart_financiero/02_create_resumen_filial.sql`   | `mart_financiero.resumen_filial`   |
+| `sql/04_mart_financiero/03_create_resumen_producto.sql` | `mart_financiero.resumen_producto` |
+| `sql/04_mart_financiero/04_create_resumen_canal.sql`    | `mart_financiero.resumen_canal`    |
+| `sql/04_mart_financiero/05_create_resumen_segmento.sql` | `mart_financiero.resumen_segmento` |
+
+Cada script elimina y recrea su tabla correspondiente, permitiendo regenerar el mart de forma controlada.
+
+# Validación del mart financiero
+
+Se creó el script:
+
+`src/validate_mart_financiero.py`
+
+Este script valida:
+
+* existencia de las tablas esperadas;
+* cantidad esperada de filas;
+* presencia de columnas requeridas;
+* tasas de dificultad de pago dentro del rango 0 a 100;
+* exposiciones y montos en riesgo no negativos.
+
+La validación fue ejecutada correctamente y no se detectaron errores.
+
+Además, se creó el script auxiliar:
+
+`src/inspect_table_info.py`
+
+Este script permite revisar tablas con un enfoque tipo `.info`, mostrando cantidad de filas, cantidad de columnas, estructura y tipos de datos sin necesidad de imprimir tablas completas.
+
+# Exportación para Power BI
+
+Se creó el script:
+
+`src/export_mart_financiero_powerbi.py`
+
+Este script exporta las tablas principales del mart a archivos CSV en:
+
+`data/exports/powerbi/`
+
+Los archivos exportados fueron:
+
+* `resumen_general.csv`;
+* `resumen_filial.csv`;
+* `resumen_producto.csv`;
+* `resumen_canal.csv`;
+* `resumen_segmento.csv`.
+
+Estos archivos quedan preparados para ser consumidos desde Power BI en una etapa posterior del proyecto.
+
+# Resultado de la fase
+
+Al cierre de esta fase, el proyecto cuenta con una capa `mart_financiero` validada, documentada y exportable.
+
+El flujo actual del proyecto queda de la siguiente forma:
+
+`raw_data` → `std_data` → `data_quality` → `cst_data` → `mart_financiero` → exportación Power BI
+
+# Próximos pasos
+
+Las siguientes etapas del proyecto podrán enfocarse en:
+
+* creación del dashboard en Power BI;
+* construcción de un modelo de machine learning para riesgo de mora;
+* análisis de importancia de variables;
+* generación de métricas predictivas;
+* documentación ejecutiva final del proyecto.
