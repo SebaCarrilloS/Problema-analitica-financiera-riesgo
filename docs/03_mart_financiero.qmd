@@ -11,6 +11,7 @@ execute:
   message: false
 ---
 
+
 # Objetivo
 
 Este documento inicia la construcción del `mart_financiero` del proyecto.
@@ -40,9 +41,9 @@ import pandas as pd
 
 Este primer bloque carga las librerías necesarias.
 
-- `duckdb` permite consultar la base local del proyecto.
-- `pandas` permite mostrar los resultados como tablas.
-- `Path` y `sys` ayudan a ubicar correctamente la raíz del proyecto.
+* `duckdb` permite consultar la base local del proyecto.
+* `pandas` permite mostrar los resultados como tablas.
+* `Path` y `sys` ayudan a ubicar correctamente la raíz del proyecto.
 
 # Ubicar la raíz del proyecto
 
@@ -130,6 +131,7 @@ resumen_general
 
 Esta tabla será la primera candidata para convertirse en una tabla oficial del `mart_financiero`.
 
+La cartera contiene 307.511 clientes, con una tasa observada de dificultad de pago de 8,07%. Además, la exposición total de crédito supera los 184 mil millones, mientras que el monto observado en riesgo representa un 7,52% de la exposición total.
 
 # Revisión ejecutiva por filial
 
@@ -164,9 +166,49 @@ riesgo_filial
 
 La tabla anterior muestra una primera lectura de riesgo por filial.
 
-En esta etapa todavía no estamos creando una tabla final del mart. Solo estamos usando Quarto como herramienta exploratoria para revisar si las métricas disponibles son útiles para una capa ejecutiva.
+La tabla por filial muestra que las diferencias de tasa de dificultad de pago son moderadas. La Filial Digital aparece con la mayor tasa observada, mientras que la Filial Austral concentra la mayor exposición crediticia total. Esto muestra que la filial con mayor riesgo porcentual no necesariamente es la misma que concentra mayor volumen de cartera.
 
 En esta etapa todavía no estamos creando una tabla final del mart. Solo estamos usando Quarto como herramienta exploratoria para revisar si las métricas disponibles son útiles para una capa ejecutiva.
+
+# Revisión ejecutiva por producto
+
+Después de revisar el riesgo por filial, analizamos el comportamiento por producto financiero.
+
+Esta dimensión es especialmente relevante porque permite identificar si ciertos productos concentran una tasa de dificultad de pago mayor que el promedio general de la cartera.
+
+```{python}
+#| label: riesgo-por-producto
+#| echo: true
+
+query = """
+SELECT
+    id_producto,
+    nombre_producto,
+    familia_producto,
+    total_clientes,
+    clientes_con_dificultad_pago,
+    tasa_dificultad_pago_pct,
+    exposicion_credito_total,
+    monto_en_riesgo_observado,
+    porcentaje_exposicion_en_riesgo,
+    margen_esperado_aproximado,
+    ranking_riesgo,
+    ranking_exposicion
+FROM cst_data.vw_gestion_riesgo_producto
+ORDER BY ranking_riesgo;
+"""
+
+riesgo_producto = con.execute(query).fetchdf()
+riesgo_producto
+```
+
+La tabla anterior permite comparar productos según riesgo observado, exposición crediticia y margen esperado aproximado.
+
+El análisis por producto muestra diferencias más marcadas que el análisis por filial. Los productos `Avance en Efectivo` y `Refinanciamiento` presentan tasas de dificultad de pago cercanas al 16%, muy por encima del promedio general de la cartera.
+
+Esto sugiere que el producto financiero es una dimensión relevante para explicar diferencias de riesgo observado.
+
+En esta etapa seguimos usando Quarto como herramienta exploratoria. La decisión de transformar esta vista en una tabla final del `mart_financiero` se tomará después de revisar si sus métricas son útiles para el análisis ejecutivo.
 
 # Cerrar conexión
 
