@@ -130,6 +130,44 @@ resumen_general
 
 Esta tabla será la primera candidata para convertirse en una tabla oficial del `mart_financiero`.
 
+
+# Revisión ejecutiva por filial
+
+Antes de crear tablas finales en `mart_financiero`, revisamos la vista ejecutiva de riesgo por filial.
+
+Esta consulta permite comparar filiales según clientes, dificultad de pago, exposición crediticia y monto observado en riesgo.
+
+```{python}
+#| label: riesgo-por-filial
+#| echo: true
+
+query = """
+SELECT
+    id_filial,
+    nombre_filial,
+    zona_filial,
+    total_clientes,
+    clientes_con_dificultad_pago,
+    tasa_dificultad_pago_pct,
+    exposicion_credito_total,
+    monto_en_riesgo_observado,
+    porcentaje_exposicion_en_riesgo,
+    ranking_riesgo,
+    ranking_exposicion
+FROM cst_data.vw_gestion_riesgo_filial
+ORDER BY ranking_riesgo;
+"""
+
+riesgo_filial = con.execute(query).fetchdf()
+riesgo_filial
+```
+
+La tabla anterior muestra una primera lectura de riesgo por filial.
+
+En esta etapa todavía no estamos creando una tabla final del mart. Solo estamos usando Quarto como herramienta exploratoria para revisar si las métricas disponibles son útiles para una capa ejecutiva.
+
+En esta etapa todavía no estamos creando una tabla final del mart. Solo estamos usando Quarto como herramienta exploratoria para revisar si las métricas disponibles son útiles para una capa ejecutiva.
+
 # Cerrar conexión
 
 ```{python}
