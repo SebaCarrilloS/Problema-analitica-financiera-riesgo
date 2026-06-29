@@ -269,27 +269,39 @@ def crear_dim_segmento() -> pd.DataFrame:
 def asignar_segmento(row: pd.Series) -> str:
     """
     Asignación semi-aleatoria de segmento usando ingreso y TARGET.
+
+    La asignación mantiene relación entre riesgo observado y segmento,
+    pero evita que SEG_005 quede determinado directamente por TARGET.
     """
     ingreso = pd.to_numeric(row["AMT_INCOME_TOTAL"], errors="coerce")
     target = pd.to_numeric(row["TARGET"], errors="coerce")
 
-    if target == 1 and rng.random() < 0.65:
-        return "SEG_005"
+    segmentos = ["SEG_001", "SEG_002", "SEG_003", "SEG_004", "SEG_005", "SEG_006"]
 
     if pd.isna(ingreso):
-        return rng.choice(["SEG_001", "SEG_006"])
+        if target == 1:
+            return rng.choice(segmentos, p=[0.12, 0.18, 0.08, 0.05, 0.40, 0.17])
+        return rng.choice(segmentos, p=[0.30, 0.28, 0.12, 0.05, 0.05, 0.20])
 
-    if ingreso >= 250000 and rng.random() < 0.7:
-        return "SEG_004"
+    if target == 1:
+        if ingreso >= 250000:
+            return rng.choice(segmentos, p=[0.05, 0.12, 0.20, 0.18, 0.35, 0.10])
+        if ingreso >= 150000:
+            return rng.choice(segmentos, p=[0.08, 0.18, 0.18, 0.08, 0.38, 0.10])
+        if ingreso >= 80000:
+            return rng.choice(segmentos, p=[0.12, 0.25, 0.08, 0.04, 0.38, 0.13])
+        return rng.choice(segmentos, p=[0.25, 0.22, 0.04, 0.02, 0.35, 0.12])
 
-    if ingreso >= 150000 and rng.random() < 0.65:
-        return "SEG_003"
+    if ingreso >= 250000:
+        return rng.choice(segmentos, p=[0.05, 0.18, 0.28, 0.34, 0.03, 0.12])
 
-    if ingreso >= 80000 and rng.random() < 0.6:
-        return "SEG_002"
+    if ingreso >= 150000:
+        return rng.choice(segmentos, p=[0.10, 0.30, 0.34, 0.12, 0.04, 0.10])
 
-    return rng.choice(["SEG_001", "SEG_006", "SEG_002"], p=[0.55, 0.25, 0.20])
+    if ingreso >= 80000:
+        return rng.choice(segmentos, p=[0.20, 0.42, 0.16, 0.04, 0.04, 0.14])
 
+    return rng.choice(segmentos, p=[0.42, 0.28, 0.06, 0.02, 0.04, 0.18])
 
 def crear_fact_asignacion_cartera(
     clientes: pd.DataFrame,
