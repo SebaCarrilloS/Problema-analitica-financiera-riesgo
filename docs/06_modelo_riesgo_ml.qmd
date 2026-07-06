@@ -1,0 +1,54 @@
+---
+title: "Modelo de Riesgo de Dificultad de Pago"
+lang: es
+format:
+  html:
+    toc: true
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Objetivo
+
+El objetivo de esta fase es construir un modelo de machine learning que estime la probabilidad de que un cliente presente dificultad de pago.
+
+La variable objetivo será:
+
+`flag_dificultad_pago`
+
+Esta variable toma los valores:
+
+- `0`: cliente sin dificultad de pago observada;
+- `1`: cliente con dificultad de pago observada.
+
+# Enfoque de modelamiento
+
+El trabajo seguirá estas etapas:
+
+1. conectar Quarto con DuckDB;
+2. cargar una muestra inicial de datos;
+3. revisar la variable objetivo;
+4. seleccionar variables predictoras;
+5. preparar los datos;
+6. separar entrenamiento y prueba;
+7. construir un modelo base;
+8. evaluar resultados;
+9. comparar modelos;
+10. interpretar las predicciones.
+
+# Consideraciones iniciales
+
+El dataset presenta un desbalance de clases: aproximadamente 8% de los clientes tiene dificultad de pago.
+
+Por esta razón, la evaluación no se basará solamente en accuracy. También se considerarán métricas como:
+
+- ROC-AUC;
+- precision;
+- recall;
+- F1-score;
+- matriz de confusión.
+
+Además, se evitará utilizar variables que puedan introducir fuga de información o `data leakage`.
