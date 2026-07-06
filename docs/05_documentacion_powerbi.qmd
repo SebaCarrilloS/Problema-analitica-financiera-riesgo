@@ -1,0 +1,183 @@
+---
+title: "Documentación del Dashboard Power BI"
+lang: es
+format:
+  html:
+    toc: true
+    number-sections: true
+---
+
+# Objetivo
+
+El objetivo de esta fase fue construir un dashboard ejecutivo en Power BI para analizar la cartera financiera desde las perspectivas de riesgo, exposición, producto, filial y segmento.
+
+El dashboard utiliza como fuente los archivos exportados desde la capa `mart_financiero`.
+
+# Fuente de datos
+
+Las tablas utilizadas fueron exportadas desde DuckDB hacia:
+
+`data/exports/powerbi/`
+
+Los archivos cargados en Power BI fueron:
+
+- `resumen_general.csv`;
+- `resumen_filial.csv`;
+- `resumen_producto.csv`;
+- `resumen_canal.csv`;
+- `resumen_segmento.csv`.
+
+Durante la carga se revisaron los tipos de datos y la configuración regional de las columnas decimales.
+
+Debido a que los archivos CSV utilizan punto como separador decimal, algunas columnas fueron convertidas usando la configuración regional `Inglés (Estados Unidos)`.
+
+# Modelo del dashboard
+
+El dashboard utiliza tablas agregadas independientes construidas desde `mart_financiero`.
+
+Se creó una tabla separada llamada `Medidas` para almacenar la lógica DAX y mantener las medidas separadas de las columnas de datos.
+
+Las tablas principales del modelo son:
+
+- `Resumen General`;
+- `Resumen Producto`;
+- `Resumen Filial`;
+- `Resumen Segmento`;
+- `Resumen Canal`;
+- `Medidas`.
+
+# Medidas DAX principales
+
+Entre las medidas utilizadas se encuentran:
+
+```DAX
+Total Clientes =
+SUM('Resumen General'[total_clientes])
+```
+
+```DAX
+Tasa Dificultad Pago =
+DIVIDE(
+    [Clientes Dificultad Pago],
+    [Total Clientes]
+)
+```
+
+```DAX
+Exposicion Total B =
+DIVIDE(
+    SUM('Resumen General'[exposicion_credito_total]),
+    1000000000
+)
+```
+
+```DAX
+Monto Riesgo Total B =
+DIVIDE(
+    SUM('Resumen General'[monto_en_riesgo_observado]),
+    1000000000
+)
+```
+
+```DAX
+Tasa Dificultad Producto =
+DIVIDE(
+    [Clientes con Dificultad Producto],
+    [Clientes Producto]
+)
+```
+
+```DAX
+Porcentaje Exposicion Riesgo Producto =
+DIVIDE(
+    SUM('Resumen Producto'[monto_en_riesgo_observado]),
+    SUM('Resumen Producto'[exposicion_credito_total])
+)
+```
+
+```DAX
+Tasa Dificultad Filial =
+DIVIDE(
+    SUM('Resumen Filial'[clientes_con_dificultad_pago]),
+    SUM('Resumen Filial'[total_clientes])
+)
+```
+
+# Página Resumen Ejecutivo
+
+La página `Resumen Ejecutivo` presenta los principales indicadores consolidados de la cartera:
+
+- total de clientes;
+- tasa de dificultad de pago;
+- exposición total;
+- monto observado en riesgo;
+- porcentaje de exposición en riesgo.
+
+También incorpora visualizaciones para analizar:
+
+- tasa de dificultad por producto;
+- monto observado en riesgo por producto;
+- tasa de dificultad por segmento.
+
+# Página Análisis Producto
+
+La página `Análisis Producto` permite filtrar por producto financiero mediante un segmentador.
+
+Incluye indicadores dinámicos de:
+
+- clientes;
+- tasa de dificultad;
+- exposición total;
+- monto en riesgo;
+- porcentaje de exposición en riesgo.
+
+Las visualizaciones principales son:
+
+- clientes por producto;
+- tasa de dificultad por producto;
+- margen esperado aproximado por producto;
+- comparación entre exposición y monto en riesgo.
+
+# Página Filial y Segmento
+
+La página `Filial y Segmento` permite analizar dos dimensiones de manera independiente.
+
+Incluye:
+
+- tasa de dificultad de pago por filial;
+- tasa de dificultad de pago por segmento;
+- comparación entre exposición y monto en riesgo por filial.
+
+Se utilizaron colores diferenciados:
+
+- azul para exposición y volumen;
+- naranja para riesgo;
+- verde para margen esperado.
+
+# Navegación
+
+Se incorporó un navegador de páginas con acceso a:
+
+- `Resumen Ejecutivo`;
+- `Análisis Producto`;
+- `Filial y Segmento`.
+
+El navegador resalta automáticamente la página activa y permite recorrer el informe sin depender de las pestañas inferiores de Power BI.
+
+# Validaciones realizadas
+
+Antes del cierre de la fase se comprobó:
+
+- funcionamiento de los segmentadores;
+- actualización correcta de tarjetas y gráficos;
+- interpretación correcta de porcentajes;
+- escala correcta de montos expresados en miles de millones;
+- navegación entre páginas;
+- persistencia de cambios después de guardar el archivo;
+- estado limpio del repositorio Git.
+
+# Resultado de la fase
+
+Al finalizar esta fase, el proyecto cuenta con un dashboard Power BI funcional de tres páginas, conectado a las salidas de `mart_financiero`.
+
+El dashboard permite analizar riesgo y exposición desde una perspectiva ejecutiva y sirve como base para incorporar posteriormente resultados predictivos de machine learning.
