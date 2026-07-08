@@ -1,6 +1,7 @@
 ---
 title: "Modelo de Riesgo de Dificultad de Pago"
 lang: es
+jupyter: python3
 format:
   html:
     toc: true
@@ -10,6 +11,7 @@ execute:
   warning: false
   message: false
 ---
+
 
 # Objetivo
 
@@ -52,3 +54,2507 @@ Por esta razón, la evaluación no se basará solamente en accuracy. También se
 - matriz de confusión.
 
 Además, se evitará utilizar variables que puedan introducir fuga de información o `data leakage`.
+
+# Configuración inicial
+
+En este bloque cargamos las librerías necesarias para trabajar con la base de datos del proyecto.
+
+```{python}
+#| label: setup
+#| echo: true
+
+from pathlib import Path
+import sys
+
+import duckdb
+import pandas as pd
+```
+
+# Conexión con DuckDB
+
+Primero identificamos el archivo DuckDB disponible dentro del proyecto.
+
+```{python}
+#| label: localizar-base-duckdb
+
+directorio_actual = Path.cwd()
+
+if directorio_actual.name == "docs":
+    raiz_proyecto = directorio_actual.parent
+else:
+    raiz_proyecto = directorio_actual
+
+ruta_base = raiz_proyecto / "data" / "database" / "financiera.duckdb"
+
+print(f"Directorio de ejecución: {directorio_actual}")
+print(f"Raíz del proyecto: {raiz_proyecto}")
+print(f"Ruta de la base: {ruta_base}")
+print(f"La base existe: {ruta_base.exists()}")
+```
+
+# Apertura de la conexión
+
+Seleccionamos el archivo de base de datos encontrado y abrimos una conexión en modo solo lectura.
+
+```{python}
+#| label: conectar-duckdb
+
+if not ruta_base.exists():
+    raise FileNotFoundError(
+        f"No se encontró la base de datos en: {ruta_base}"
+    )
+
+conexion = duckdb.connect(
+    database=str(ruta_base),
+    read_only=True
+)
+
+print(f"Base conectada: {ruta_base.name}")
+print("Conexión de solo lectura creada correctamente.")
+```
+
+
+# Exploración de tablas disponibles
+
+Consultamos las tablas y vistas existentes en la base para identificar la fuente que utilizaremos en el modelamiento.
+
+```{python}
+#| label: listar-tablas
+
+tablas = conexion.execute("""
+    SELECT
+        table_schema,
+        table_name,
+        table_type
+    FROM information_schema.tables
+    ORDER BY
+        table_schema,
+        table_name
+""").df()
+
+print(f"Filas: {len(tablas)}")
+print(f"Columnas: {tablas.shape[1]}")
+print()
+print(tablas.to_string(index=False))
+```
+
+# Inspección de la tabla de modelamiento
+
+Revisamos el número de filas, columnas y tipos de datos de la tabla que utilizaremos para construir el modelo.
+
+```{python}
+#| label: inspeccionar-tabla-modelamiento
+
+nombre_tabla = "cst_data.cartera_clientes_train"
+
+conteo = conexion.execute(f"""
+    SELECT COUNT(*) AS total_filas
+    FROM {nombre_tabla}
+""").df()
+
+esquema = conexion.execute(f"""
+    DESCRIBE {nombre_tabla}
+""").df()
+
+print(f"Tabla: {nombre_tabla}")
+print(f"Filas: {conteo.loc[0, 'total_filas']}")
+print(f"Columnas: {len(esquema)}")
+print()
+print(esquema.to_string(index=False))
+```
+
+# Distribución de la variable objetivo
+
+Analizamos cuántos clientes presentan dificultad de pago y qué proporción representan dentro del dataset.
+
+```{python}
+#| label: distribucion-variable-objetivo
+
+distribucion_objetivo = conexion.execute(f"""
+    SELECT
+        flag_dificultad_pago,
+        COUNT(*) AS cantidad_clientes,
+        ROUND(
+            100.0 * COUNT(*) / SUM(COUNT(*)) OVER (),
+            2
+        ) AS porcentaje
+    FROM {nombre_tabla}
+    GROUP BY flag_dificultad_pago
+    ORDER BY flag_dificultad_pago
+""").df()
+
+print(distribucion_objetivo.to_string(index=False))
+```
+
+# Revisión de variables candidatas
+
+Antes de construir el modelo, clasificamos las columnas disponibles según su posible uso.
+
+Primero obtenemos el listado de nombres y tipos de datos.
+
+```{python}
+#| label: revisar-variables-candidatas
+
+columnas_modelamiento = esquema[
+    ["column_name", "column_type"]
+].copy()
+
+print(f"Total de columnas disponibles: {len(columnas_modelamiento)}")
+print()
+print(columnas_modelamiento.to_string(index=False))
+```
+
+# Clasificación inicial de variables
+
+Separamos la variable objetivo, el identificador, las variables con fuga directa de información y las variables técnicas.
+
+```{python}
+#| label: clasificar-variables
+
+variable_objetivo = "flag_dificultad_pago"
+
+variables_identificacion = [
+    "id_cliente"
+]
+
+variables_leakage_directo = [
+    "estado_riesgo_observado"
+]
+
+variables_tecnicas = [
+    "fecha_carga_cst"
+]
+
+def clasificar_variable(nombre, tipo):
+    if nombre == variable_objetivo:
+        return "objetivo"
+
+    if nombre in variables_identificacion:
+        return "identificador"
+
+    if nombre in variables_leakage_directo:
+        return "leakage_directo"
+
+    if nombre in variables_tecnicas:
+        return "tecnica"
+
+    if tipo in ["VARCHAR", "BOOLEAN"]:
+        return "predictora_categorica"
+
+    if tipo in [
+        "INTEGER",
+        "BIGINT",
+        "DOUBLE",
+        "FLOAT",
+        "DECIMAL"
+    ]:
+        return "predictora_numerica"
+
+    return "revisar"
+
+inventario_variables = columnas_modelamiento.copy()
+
+inventario_variables["clasificacion"] = inventario_variables.apply(
+    lambda fila: clasificar_variable(
+        fila["column_name"],
+        fila["column_type"]
+    ),
+    axis=1
+)
+
+resumen_clasificacion = (
+    inventario_variables
+    .groupby("clasificacion")
+    .size()
+    .reset_index(name="cantidad")
+    .sort_values("clasificacion")
+)
+
+print("Resumen de clasificación:")
+print(resumen_clasificacion.to_string(index=False))
+
+print()
+print("Variables excluidas inicialmente:")
+
+print(
+    inventario_variables[
+        inventario_variables["clasificacion"].isin(
+            [
+                "objetivo",
+                "identificador",
+                "leakage_directo",
+                "tecnica"
+            ]
+        )
+    ].to_string(index=False)
+)
+```
+
+# Construcción de listas de variables
+
+A partir del inventario anterior, separamos las variables numéricas y categóricas que podrían utilizarse como predictoras.
+
+```{python}
+#| label: construir-listas-variables
+
+variables_numericas = (
+    inventario_variables
+    .loc[
+        inventario_variables["clasificacion"] == "predictora_numerica",
+        "column_name"
+    ]
+    .tolist()
+)
+
+variables_categoricas = (
+    inventario_variables
+    .loc[
+        inventario_variables["clasificacion"] == "predictora_categorica",
+        "column_name"
+    ]
+    .tolist()
+)
+
+variables_excluidas = (
+    variables_identificacion
+    + variables_leakage_directo
+    + variables_tecnicas
+)
+
+variables_predictoras = (
+    variables_numericas
+    + variables_categoricas
+)
+
+print(f"Variables numéricas: {len(variables_numericas)}")
+print(f"Variables categóricas: {len(variables_categoricas)}")
+print(f"Variables predictoras totales: {len(variables_predictoras)}")
+print(f"Variables excluidas: {len(variables_excluidas)}")
+
+print()
+print("Variables numéricas:")
+print(variables_numericas)
+
+print()
+print("Variables categóricas:")
+print(variables_categoricas)
+
+print()
+print("Variables excluidas:")
+print(variables_excluidas)
+```
+
+# Revisión de posibles fugas de información
+
+Buscamos variables cuyos nombres puedan indicar que contienen información derivada del resultado observado, del riesgo ya calculado o de procesos posteriores a la evaluación del cliente.
+
+```{python}
+#| label: detectar-posible-leakage
+
+terminos_sospechosos = [
+    "riesgo",
+    "dificultad",
+    "default",
+    "mora",
+    "incumplimiento",
+    "observado",
+    "target",
+    "score",
+    "probabilidad",
+    "estado"
+]
+
+variables_sospechosas = [
+    variable
+    for variable in variables_predictoras
+    if any(
+        termino in variable.lower()
+        for termino in terminos_sospechosos
+    )
+]
+
+print(
+    f"Variables potencialmente sospechosas: "
+    f"{len(variables_sospechosas)}"
+)
+
+print()
+
+for variable in variables_sospechosas:
+    print(variable)
+```
+
+# Detalle de variables sospechosas
+
+Revisamos el tipo de dato y algunos valores de las variables detectadas para determinar si realmente pueden utilizarse antes de conocer el resultado del cliente.
+
+```{python}
+#| label: inspeccionar-variables-sospechosas
+
+if len(variables_sospechosas) == 0:
+    print("No se detectaron variables sospechosas adicionales.")
+else:
+    detalle_sospechosas = inventario_variables[
+        inventario_variables["column_name"].isin(
+            variables_sospechosas
+        )
+    ].copy()
+
+    print("Variables sospechosas detectadas:")
+    print(detalle_sospechosas.to_string(index=False))
+
+    print()
+    print("Ejemplos de valores:")
+
+    columnas_sql = ", ".join(variables_sospechosas)
+
+    muestra_sospechosas = conexion.execute(f"""
+        SELECT {columnas_sql}
+        FROM {nombre_tabla}
+        LIMIT 10
+    """).df()
+
+    print(muestra_sospechosas.to_string(index=False))
+```
+
+# Exclusiones adicionales por riesgo de fuga
+
+Después de revisar manualmente las variables sospechosas, excluimos las clasificaciones de riesgo corporativas derivadas.
+
+Los scores externos se mantienen porque corresponden a información predictiva disponible antes de observar el resultado de pago.
+
+```{python}
+#| label: actualizar-exclusiones-leakage
+
+variables_leakage_adicional = [
+    "riesgo_esperado_producto",
+    "perfil_riesgo_segmento"
+]
+
+variables_excluidas = (
+    variables_identificacion
+    + variables_leakage_directo
+    + variables_leakage_adicional
+    + variables_tecnicas
+)
+
+variables_predictoras = [
+    variable
+    for variable in variables_predictoras
+    if variable not in variables_leakage_adicional
+]
+
+variables_numericas = [
+    variable
+    for variable in variables_numericas
+    if variable not in variables_leakage_adicional
+]
+
+variables_categoricas = [
+    variable
+    for variable in variables_categoricas
+    if variable not in variables_leakage_adicional
+]
+
+print("Variables excluidas por posible fuga de información:")
+
+for variable in (
+    variables_leakage_directo
+    + variables_leakage_adicional
+):
+    print(f"- {variable}")
+
+print()
+print(f"Variables predictoras restantes: {len(variables_predictoras)}")
+print(f"Variables numéricas: {len(variables_numericas)}")
+print(f"Variables categóricas: {len(variables_categoricas)}")
+```
+
+# Diagnóstico de calidad de las variables predictoras
+
+Antes de cargar el dataset completo, revisamos para cada variable:
+
+- cantidad de valores nulos;
+- porcentaje de valores nulos;
+- cantidad de valores distintos.
+
+Esto permitirá detectar variables casi vacías, constantes o con cardinalidad excesiva.
+
+```{python}
+#| label: diagnostico-predictoras
+
+expresiones_diagnostico = []
+
+for variable in variables_predictoras:
+    expresiones_diagnostico.append(
+        f"""
+        SELECT
+            '{variable}' AS variable,
+            COUNT(*) - COUNT("{variable}") AS cantidad_nulos,
+            ROUND(
+                100.0 * (COUNT(*) - COUNT("{variable}")) / COUNT(*),
+                2
+            ) AS porcentaje_nulos,
+            COUNT(DISTINCT "{variable}") AS valores_distintos
+        FROM {nombre_tabla}
+        """
+    )
+
+consulta_diagnostico = "\nUNION ALL\n".join(
+    expresiones_diagnostico
+)
+
+diagnostico_predictoras = conexion.execute(
+    consulta_diagnostico
+).df()
+
+diagnostico_predictoras = diagnostico_predictoras.sort_values(
+    by=[
+        "porcentaje_nulos",
+        "valores_distintos"
+    ],
+    ascending=[
+        False,
+        False
+    ]
+).reset_index(drop=True)
+
+print(f"Variables analizadas: {len(diagnostico_predictoras)}")
+print()
+print(
+    diagnostico_predictoras.to_string(
+        index=False
+    )
+)
+```
+
+# Identificación de variables problemáticas
+
+A partir del diagnóstico anterior, identificamos variables que podrían perjudicar el modelamiento.
+
+```{python}
+#| label: identificar-variables-problematicas
+
+umbral_nulos = 80.0
+umbral_cardinalidad_alta = 100
+
+variables_constantes = (
+    diagnostico_predictoras
+    .loc[
+        diagnostico_predictoras["valores_distintos"] <= 1,
+        "variable"
+    ]
+    .tolist()
+)
+
+variables_muchos_nulos = (
+    diagnostico_predictoras
+    .loc[
+        diagnostico_predictoras["porcentaje_nulos"] >= umbral_nulos,
+        "variable"
+    ]
+    .tolist()
+)
+
+variables_alta_cardinalidad = (
+    diagnostico_predictoras
+    .loc[
+        (
+            diagnostico_predictoras["variable"]
+            .isin(variables_categoricas)
+        )
+        & (
+            diagnostico_predictoras["valores_distintos"]
+            >= umbral_cardinalidad_alta
+        ),
+        "variable"
+    ]
+    .tolist()
+)
+
+print("Variables constantes:")
+print(variables_constantes)
+
+print()
+print(f"Variables con al menos {umbral_nulos}% de nulos:")
+print(variables_muchos_nulos)
+
+print()
+print(
+    f"Variables con al menos "
+    f"{umbral_cardinalidad_alta} valores distintos:"
+)
+print(variables_alta_cardinalidad)
+```
+
+# Exclusión de variables constantes
+
+Las variables constantes no aportan capacidad predictiva, ya que presentan el mismo valor para todos los registros.
+
+```{python}
+#| label: excluir-variables-constantes
+
+variables_excluidas_calidad = variables_constantes.copy()
+
+variables_excluidas = list(dict.fromkeys(
+    variables_excluidas
+    + variables_excluidas_calidad
+))
+
+variables_predictoras = [
+    variable
+    for variable in variables_predictoras
+    if variable not in variables_excluidas_calidad
+]
+
+variables_numericas = [
+    variable
+    for variable in variables_numericas
+    if variable not in variables_excluidas_calidad
+]
+
+variables_categoricas = [
+    variable
+    for variable in variables_categoricas
+    if variable not in variables_excluidas_calidad
+]
+
+print("Variables constantes excluidas:")
+
+for variable in variables_excluidas_calidad:
+    print(f"- {variable}")
+
+print()
+print(f"Variables predictoras restantes: {len(variables_predictoras)}")
+print(f"Variables numéricas restantes: {len(variables_numericas)}")
+print(f"Variables categóricas restantes: {len(variables_categoricas)}")
+```
+
+# Revisión de la variable `id_ejecutivo`
+
+La variable `id_ejecutivo` presenta alta cardinalidad. Revisamos su cantidad de categorías, frecuencia mínima, frecuencia máxima y distribución general antes de decidir si debe mantenerse.
+
+```{python}
+#| label: revisar-id-ejecutivo
+
+resumen_id_ejecutivo = conexion.execute(f"""
+    SELECT
+        COUNT(DISTINCT id_ejecutivo) AS ejecutivos_distintos,
+        MIN(cantidad_clientes) AS clientes_minimos_por_ejecutivo,
+        MAX(cantidad_clientes) AS clientes_maximos_por_ejecutivo,
+        ROUND(AVG(cantidad_clientes), 2) AS promedio_clientes_por_ejecutivo
+    FROM (
+        SELECT
+            id_ejecutivo,
+            COUNT(*) AS cantidad_clientes
+        FROM {nombre_tabla}
+        GROUP BY id_ejecutivo
+    )
+""").df()
+
+print(resumen_id_ejecutivo.to_string(index=False))
+```
+
+# Distribución de clientes por ejecutivo
+
+```{python}
+#| label: distribucion-id-ejecutivo
+
+distribucion_id_ejecutivo = conexion.execute(f"""
+    SELECT
+        id_ejecutivo,
+        COUNT(*) AS cantidad_clientes,
+        ROUND(
+            100.0 * AVG(flag_dificultad_pago),
+            2
+        ) AS tasa_dificultad_pct
+    FROM {nombre_tabla}
+    GROUP BY id_ejecutivo
+    ORDER BY cantidad_clientes DESC
+    LIMIT 20
+""").df()
+
+print(distribucion_id_ejecutivo.to_string(index=False))
+```
+
+# Exclusión de `id_ejecutivo`
+
+Se excluye `id_ejecutivo` del modelo base porque corresponde a un identificador operacional y no a una característica propia del cliente o del crédito.
+
+```{python}
+#| label: excluir-id-ejecutivo
+
+variable_alta_cardinalidad_excluida = [
+    "id_ejecutivo"
+]
+
+variables_excluidas = list(dict.fromkeys(
+    variables_excluidas
+    + variable_alta_cardinalidad_excluida
+))
+
+variables_predictoras = [
+    variable
+    for variable in variables_predictoras
+    if variable not in variable_alta_cardinalidad_excluida
+]
+
+variables_categoricas = [
+    variable
+    for variable in variables_categoricas
+    if variable not in variable_alta_cardinalidad_excluida
+]
+
+print("Variable excluida:")
+print("- id_ejecutivo")
+
+print()
+print(f"Variables predictoras restantes: {len(variables_predictoras)}")
+print(f"Variables numéricas restantes: {len(variables_numericas)}")
+print(f"Variables categóricas restantes: {len(variables_categoricas)}")
+```
+
+# Carga del dataset de modelamiento
+
+Cargamos únicamente las variables predictoras seleccionadas y la variable objetivo.
+
+```{python}
+#| label: cargar-dataset-modelamiento
+
+columnas_seleccionadas = (
+    variables_predictoras
+    + [variable_objetivo]
+)
+
+columnas_sql = ",\n        ".join(
+    (
+        f'CAST("{columna}" AS VARCHAR) AS "{columna}"'
+        if columna in variables_categoricas
+        else f'"{columna}"'
+    )
+    for columna in columnas_seleccionadas
+)
+
+datos_modelamiento = conexion.execute(f"""
+    SELECT
+        {columnas_sql}
+    FROM {nombre_tabla}
+""").df()
+
+print(f"Filas: {datos_modelamiento.shape[0]}")
+print(f"Columnas: {datos_modelamiento.shape[1]}")
+print()
+print("Tipos de datos:")
+print(datos_modelamiento.dtypes.value_counts())
+```
+
+
+# División del dataset
+
+Separamos el dataset en tres subconjuntos:
+
+- 70% para entrenamiento;
+- 20% para prueba;
+- 10% para validación final.
+
+La división se realiza de manera estratificada para conservar la proporción de clientes con y sin dificultad de pago.
+
+```{python}
+#| label: dividir-dataset
+
+from sklearn.model_selection import train_test_split
+
+X = datos_modelamiento[variables_predictoras].copy()
+y = datos_modelamiento[variable_objetivo].copy()
+
+X_entrenamiento, X_temporal, y_entrenamiento, y_temporal = (
+    train_test_split(
+        X,
+        y,
+        test_size=0.30,
+        random_state=42,
+        stratify=y
+    )
+)
+
+X_prueba, X_validacion_final, y_prueba, y_validacion_final = (
+    train_test_split(
+        X_temporal,
+        y_temporal,
+        test_size=1 / 3,
+        random_state=42,
+        stratify=y_temporal
+    )
+)
+
+print(f"Entrenamiento: {len(X_entrenamiento):,} filas")
+print(f"Prueba: {len(X_prueba):,} filas")
+print(f"Validación final: {len(X_validacion_final):,} filas")
+
+print()
+print("Proporción de dificultad de pago:")
+
+print(
+    f"Entrenamiento: "
+    f"{y_entrenamiento.mean():.4%}"
+)
+
+print(
+    f"Prueba: "
+    f"{y_prueba.mean():.4%}"
+)
+
+print(
+    f"Validación final: "
+    f"{y_validacion_final.mean():.4%}"
+)
+```
+
+# Validación de la partición
+
+Verificamos que los conjuntos de entrenamiento, prueba y validación final no compartan índices.
+
+```{python}
+#| label: validar-particion
+
+solapamiento_entrenamiento_prueba = (
+    X_entrenamiento.index
+    .intersection(X_prueba.index)
+)
+
+solapamiento_entrenamiento_validacion = (
+    X_entrenamiento.index
+    .intersection(X_validacion_final.index)
+)
+
+solapamiento_prueba_validacion = (
+    X_prueba.index
+    .intersection(X_validacion_final.index)
+)
+
+total_registros_particionados = (
+    len(X_entrenamiento)
+    + len(X_prueba)
+    + len(X_validacion_final)
+)
+
+print(
+    "Solapamiento entrenamiento-prueba:",
+    len(solapamiento_entrenamiento_prueba)
+)
+
+print(
+    "Solapamiento entrenamiento-validación:",
+    len(solapamiento_entrenamiento_validacion)
+)
+
+print(
+    "Solapamiento prueba-validación:",
+    len(solapamiento_prueba_validacion)
+)
+
+print()
+print(
+    "Total de registros particionados:",
+    f"{total_registros_particionados:,}"
+)
+
+print(
+    "Total de registros originales:",
+    f"{len(datos_modelamiento):,}"
+)
+
+assert len(solapamiento_entrenamiento_prueba) == 0
+assert len(solapamiento_entrenamiento_validacion) == 0
+assert len(solapamiento_prueba_validacion) == 0
+assert total_registros_particionados == len(datos_modelamiento)
+
+print()
+print("Partición validada correctamente.")
+```
+
+# Validación de tipos de variables
+
+Comprobamos los tipos de datos presentes en el conjunto de entrenamiento y verificamos que todas las variables predictoras estén correctamente clasificadas.
+
+```{python}
+#| label: validar-tipos-predictoras
+
+tipos_entrenamiento = (
+    X_entrenamiento
+    .dtypes
+    .astype(str)
+    .reset_index()
+)
+
+tipos_entrenamiento.columns = [
+    "variable",
+    "tipo_pandas"
+]
+
+variables_clasificadas = set(
+    variables_numericas
+    + variables_categoricas
+)
+
+variables_sin_clasificar = [
+    variable
+    for variable in X_entrenamiento.columns
+    if variable not in variables_clasificadas
+]
+
+variables_clasificadas_ausentes = [
+    variable
+    for variable in variables_clasificadas
+    if variable not in X_entrenamiento.columns
+]
+
+print("Tipos de datos en entrenamiento:")
+print(
+    tipos_entrenamiento["tipo_pandas"]
+    .value_counts()
+    .to_string()
+)
+
+print()
+print(f"Variables numéricas declaradas: {len(variables_numericas)}")
+print(f"Variables categóricas declaradas: {len(variables_categoricas)}")
+
+print()
+print("Variables sin clasificar:")
+print(variables_sin_clasificar)
+
+print()
+print("Variables clasificadas pero ausentes:")
+print(variables_clasificadas_ausentes)
+
+assert len(variables_sin_clasificar) == 0
+assert len(variables_clasificadas_ausentes) == 0
+assert len(variables_clasificadas) == X_entrenamiento.shape[1]
+
+print()
+print("Clasificación de variables validada correctamente.")
+```
+
+# Preprocesamiento del modelo base
+
+Definimos un pipeline distinto para variables numéricas y categóricas.
+
+Las variables numéricas se imputan mediante la mediana y luego se escalan con `StandardScaler`.
+
+Las variables categóricas se imputan con la categoría explícita `Sin información` y luego se transforman con `OneHotEncoder`.
+
+```{python}
+#| label: construir-preprocesamiento
+
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+pipeline_numerico = Pipeline(
+    steps=[
+        (
+            "imputador",
+            SimpleImputer(strategy="median")
+        ),
+        (
+            "escalador",
+            StandardScaler()
+        )
+    ]
+)
+
+pipeline_categorico = Pipeline(
+    steps=[
+        (
+            "imputador",
+            SimpleImputer(
+                strategy="constant",
+                fill_value="Sin información"
+            )
+        ),
+        (
+            "codificador",
+            OneHotEncoder(
+                handle_unknown="ignore"
+            )
+        )
+    ]
+)
+
+preprocesador = ColumnTransformer(
+    transformers=[
+        (
+            "numericas",
+            pipeline_numerico,
+            variables_numericas
+        ),
+        (
+            "categoricas",
+            pipeline_categorico,
+            variables_categoricas
+        )
+    ]
+)
+
+print("Preprocesamiento creado correctamente.")
+print(f"Variables numéricas: {len(variables_numericas)}")
+print(f"Variables categóricas: {len(variables_categoricas)}")
+```
+
+
+# Modelo base de regresión logística
+
+Construimos un pipeline que integra el preprocesamiento y la regresión logística.
+
+Mantener ambas etapas dentro del mismo pipeline evita que las transformaciones aprendan información desde los conjuntos de prueba o validación final.
+
+```{python}
+#| label: entrenar-regresion-logistica-base
+
+from sklearn.linear_model import LogisticRegression
+
+modelo_logistico_base = Pipeline(
+    steps=[
+        (
+            "preprocesamiento",
+            preprocesador
+        ),
+        (
+            "modelo",
+            LogisticRegression(
+                max_iter=1000,
+                random_state=42
+            )
+        )
+    ]
+)
+
+modelo_logistico_base.fit(
+    X_entrenamiento,
+    y_entrenamiento
+)
+
+print("Modelo de regresión logística entrenado correctamente.")
+```
+
+# Evaluación del modelo base
+
+Evaluamos la regresión logística sobre el conjunto de prueba utilizando el umbral predeterminado de `0.50`.
+
+```{python}
+#| label: evaluar-regresion-logistica-base
+
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score
+)
+
+probabilidades_prueba_base = (
+    modelo_logistico_base.predict_proba(X_prueba)[:, 1]
+)
+
+predicciones_prueba_base = (
+    modelo_logistico_base.predict(X_prueba)
+)
+
+metricas_modelo_base = {
+    "accuracy": accuracy_score(
+        y_prueba,
+        predicciones_prueba_base
+    ),
+    "balanced_accuracy": balanced_accuracy_score(
+        y_prueba,
+        predicciones_prueba_base
+    ),
+    "precision": precision_score(
+        y_prueba,
+        predicciones_prueba_base,
+        zero_division=0
+    ),
+    "recall": recall_score(
+        y_prueba,
+        predicciones_prueba_base,
+        zero_division=0
+    ),
+    "f1_score": f1_score(
+        y_prueba,
+        predicciones_prueba_base,
+        zero_division=0
+    ),
+    "roc_auc": roc_auc_score(
+        y_prueba,
+        probabilidades_prueba_base
+    ),
+    "pr_auc": average_precision_score(
+        y_prueba,
+        probabilidades_prueba_base
+    )
+}
+
+for nombre_metrica, valor in metricas_modelo_base.items():
+    print(f"{nombre_metrica}: {valor:.4f}")
+```
+
+# Matriz de confusión
+
+```{python}
+#| label: matriz-confusion-modelo-base
+
+matriz_confusion_base = confusion_matrix(
+    y_prueba,
+    predicciones_prueba_base
+)
+
+verdaderos_negativos = matriz_confusion_base[0, 0]
+falsos_positivos = matriz_confusion_base[0, 1]
+falsos_negativos = matriz_confusion_base[1, 0]
+verdaderos_positivos = matriz_confusion_base[1, 1]
+
+print("Matriz de confusión:")
+print(matriz_confusion_base)
+
+print()
+print(f"Verdaderos negativos: {verdaderos_negativos:,}")
+print(f"Falsos positivos: {falsos_positivos:,}")
+print(f"Falsos negativos: {falsos_negativos:,}")
+print(f"Verdaderos positivos: {verdaderos_positivos:,}")
+```
+
+# Evaluación de umbrales de clasificación
+
+La regresión logística genera probabilidades. Evaluamos distintos umbrales para observar cómo cambian precision, recall, F1-score y balanced accuracy.
+
+La validación final permanece sin utilizar.
+
+```{python}
+#| label: evaluar-umbrales
+
+import numpy as np
+
+resultados_umbrales = []
+
+umbrales = np.arange(0.05, 0.55, 0.05)
+
+for umbral in umbrales:
+    predicciones_umbral = (
+        probabilidades_prueba_base >= umbral
+    ).astype(int)
+
+    matriz = confusion_matrix(
+        y_prueba,
+        predicciones_umbral
+    )
+
+    verdaderos_negativos = matriz[0, 0]
+    falsos_positivos = matriz[0, 1]
+    falsos_negativos = matriz[1, 0]
+    verdaderos_positivos = matriz[1, 1]
+
+    resultados_umbrales.append(
+        {
+            "umbral": umbral,
+            "precision": precision_score(
+                y_prueba,
+                predicciones_umbral,
+                zero_division=0
+            ),
+            "recall": recall_score(
+                y_prueba,
+                predicciones_umbral,
+                zero_division=0
+            ),
+            "f1_score": f1_score(
+                y_prueba,
+                predicciones_umbral,
+                zero_division=0
+            ),
+            "balanced_accuracy": balanced_accuracy_score(
+                y_prueba,
+                predicciones_umbral
+            ),
+            "falsos_positivos": falsos_positivos,
+            "falsos_negativos": falsos_negativos,
+            "verdaderos_positivos": verdaderos_positivos,
+            "verdaderos_negativos": verdaderos_negativos
+        }
+    )
+
+tabla_umbrales = pd.DataFrame(resultados_umbrales)
+
+print(
+    tabla_umbrales.round(
+        {
+            "umbral": 2,
+            "precision": 4,
+            "recall": 4,
+            "f1_score": 4,
+            "balanced_accuracy": 4
+        }
+    ).to_string(index=False)
+)
+```
+
+
+# Selección del umbral del modelo base
+
+Se selecciona un umbral de clasificación de `0,25`, ya que maximiza el F1-score en el conjunto de prueba.
+
+La validación final continúa sin utilizarse.
+
+```{python}
+#| label: seleccionar-umbral-modelo-base
+
+umbral_modelo_base = 0.25
+
+predicciones_prueba_umbral = (
+    probabilidades_prueba_base >= umbral_modelo_base
+).astype(int)
+
+metricas_umbral_seleccionado = {
+    "umbral": umbral_modelo_base,
+    "accuracy": accuracy_score(
+        y_prueba,
+        predicciones_prueba_umbral
+    ),
+    "balanced_accuracy": balanced_accuracy_score(
+        y_prueba,
+        predicciones_prueba_umbral
+    ),
+    "precision": precision_score(
+        y_prueba,
+        predicciones_prueba_umbral,
+        zero_division=0
+    ),
+    "recall": recall_score(
+        y_prueba,
+        predicciones_prueba_umbral,
+        zero_division=0
+    ),
+    "f1_score": f1_score(
+        y_prueba,
+        predicciones_prueba_umbral,
+        zero_division=0
+    ),
+    "roc_auc": roc_auc_score(
+        y_prueba,
+        probabilidades_prueba_base
+    ),
+    "pr_auc": average_precision_score(
+        y_prueba,
+        probabilidades_prueba_base
+    )
+}
+
+for nombre_metrica, valor in metricas_umbral_seleccionado.items():
+    print(f"{nombre_metrica}: {valor:.4f}")
+```
+
+
+# Matriz de confusión con umbral seleccionado
+
+```{python}
+#| label: matriz-confusion-umbral-seleccionado
+
+matriz_confusion_umbral = confusion_matrix(
+    y_prueba,
+    predicciones_prueba_umbral
+)
+
+verdaderos_negativos_umbral = matriz_confusion_umbral[0, 0]
+falsos_positivos_umbral = matriz_confusion_umbral[0, 1]
+falsos_negativos_umbral = matriz_confusion_umbral[1, 0]
+verdaderos_positivos_umbral = matriz_confusion_umbral[1, 1]
+
+print("Matriz de confusión:")
+print(matriz_confusion_umbral)
+
+print()
+print(
+    f"Verdaderos negativos: "
+    f"{verdaderos_negativos_umbral:,}"
+)
+print(
+    f"Falsos positivos: "
+    f"{falsos_positivos_umbral:,}"
+)
+print(
+    f"Falsos negativos: "
+    f"{falsos_negativos_umbral:,}"
+)
+print(
+    f"Verdaderos positivos: "
+    f"{verdaderos_positivos_umbral:,}"
+)
+```
+
+# Otro modelo a probar: Random Forest
+
+Construimos un Random Forest para compararlo con la regresión logística.
+
+La validación final continúa sin utilizarse.
+
+```{python}
+#| label: entrenar-random-forest
+
+from sklearn.ensemble import RandomForestClassifier
+
+pipeline_numerico_rf = Pipeline(
+    steps=[
+        (
+            "imputador",
+            SimpleImputer(strategy="median")
+        )
+    ]
+)
+
+pipeline_categorico_rf = Pipeline(
+    steps=[
+        (
+            "imputador",
+            SimpleImputer(
+                strategy="constant",
+                fill_value="Sin información"
+            )
+        ),
+        (
+            "codificador",
+            OneHotEncoder(
+                handle_unknown="ignore"
+            )
+        )
+    ]
+)
+
+preprocesador_rf = ColumnTransformer(
+    transformers=[
+        (
+            "numericas",
+            pipeline_numerico_rf,
+            variables_numericas
+        ),
+        (
+            "categoricas",
+            pipeline_categorico_rf,
+            variables_categoricas
+        )
+    ]
+)
+
+modelo_random_forest = Pipeline(
+    steps=[
+        (
+            "preprocesamiento",
+            preprocesador_rf
+        ),
+        (
+            "modelo",
+            RandomForestClassifier(
+                n_estimators=300,
+                max_depth=18,
+                min_samples_leaf=10,
+                max_features="sqrt",
+                class_weight="balanced_subsample",
+                n_jobs=-1,
+                random_state=42
+            )
+        )
+    ]
+)
+
+modelo_random_forest.fit(
+    X_entrenamiento,
+    y_entrenamiento
+)
+
+print("Random Forest entrenado correctamente.")
+```
+
+# Evaluación del Random Forest
+
+Evaluamos el Random Forest sobre el conjunto de prueba.
+
+```{python}
+#| label: evaluar-random-forest
+
+probabilidades_prueba_bosque = (
+    modelo_random_forest.predict_proba(X_prueba)[:, 1]
+)
+
+predicciones_prueba_bosque = (
+    modelo_random_forest.predict(X_prueba)
+)
+
+metricas_random_forest = {
+    "accuracy": accuracy_score(
+        y_prueba,
+        predicciones_prueba_bosque
+    ),
+    "balanced_accuracy": balanced_accuracy_score(
+        y_prueba,
+        predicciones_prueba_bosque
+    ),
+    "precision": precision_score(
+        y_prueba,
+        predicciones_prueba_bosque,
+        zero_division=0
+    ),
+    "recall": recall_score(
+        y_prueba,
+        predicciones_prueba_bosque,
+        zero_division=0
+    ),
+    "f1_score": f1_score(
+        y_prueba,
+        predicciones_prueba_bosque,
+        zero_division=0
+    ),
+    "roc_auc": roc_auc_score(
+        y_prueba,
+        probabilidades_prueba_bosque
+    ),
+    "pr_auc": average_precision_score(
+        y_prueba,
+        probabilidades_prueba_bosque
+    )
+}
+
+for nombre_metrica, valor in metricas_random_forest.items():
+    print(f"{nombre_metrica}: {valor:.4f}")
+```
+
+# Matriz de confusión del Random Forest
+
+```{python}
+#| label: matriz-confusion-random-forest
+
+matriz_confusion_bosque = confusion_matrix(
+    y_prueba,
+    predicciones_prueba_bosque
+)
+
+verdaderos_negativos_bosque = matriz_confusion_bosque[0, 0]
+falsos_positivos_bosque = matriz_confusion_bosque[0, 1]
+falsos_negativos_bosque = matriz_confusion_bosque[1, 0]
+verdaderos_positivos_bosque = matriz_confusion_bosque[1, 1]
+
+print("Matriz de confusión:")
+print(matriz_confusion_bosque)
+
+print()
+print(f"Verdaderos negativos: {verdaderos_negativos_bosque:,}")
+print(f"Falsos positivos: {falsos_positivos_bosque:,}")
+print(f"Falsos negativos: {falsos_negativos_bosque:,}")
+print(f"Verdaderos positivos: {verdaderos_positivos_bosque:,}")
+```
+
+# Evaluación de umbrales del Random Forest
+
+Evaluamos distintos umbrales de clasificación para el Random Forest. El criterio de selección será maximizar el F1-score en el conjunto de prueba.
+
+```{python}
+#| label: evaluar-umbrales-random-forest
+
+resultados_umbrales_bosque = []
+
+umbrales_bosque = np.arange(0.05, 0.75, 0.05)
+
+for umbral in umbrales_bosque:
+    predicciones_umbral_bosque = (
+        probabilidades_prueba_bosque >= umbral
+    ).astype(int)
+
+    matriz_bosque = confusion_matrix(
+        y_prueba,
+        predicciones_umbral_bosque
+    )
+
+    verdaderos_negativos = matriz_bosque[0, 0]
+    falsos_positivos = matriz_bosque[0, 1]
+    falsos_negativos = matriz_bosque[1, 0]
+    verdaderos_positivos = matriz_bosque[1, 1]
+
+    resultados_umbrales_bosque.append(
+        {
+            "umbral": umbral,
+            "precision": precision_score(
+                y_prueba,
+                predicciones_umbral_bosque,
+                zero_division=0
+            ),
+            "recall": recall_score(
+                y_prueba,
+                predicciones_umbral_bosque,
+                zero_division=0
+            ),
+            "f1_score": f1_score(
+                y_prueba,
+                predicciones_umbral_bosque,
+                zero_division=0
+            ),
+            "balanced_accuracy": balanced_accuracy_score(
+                y_prueba,
+                predicciones_umbral_bosque
+            ),
+            "falsos_positivos": falsos_positivos,
+            "falsos_negativos": falsos_negativos,
+            "verdaderos_positivos": verdaderos_positivos,
+            "verdaderos_negativos": verdaderos_negativos
+        }
+    )
+
+tabla_umbrales_bosque = pd.DataFrame(
+    resultados_umbrales_bosque
+)
+
+tabla_umbrales_bosque = tabla_umbrales_bosque.sort_values(
+    by="umbral"
+).reset_index(drop=True)
+
+print(
+    tabla_umbrales_bosque.round(
+        {
+            "umbral": 2,
+            "precision": 4,
+            "recall": 4,
+            "f1_score": 4,
+            "balanced_accuracy": 4
+        }
+    ).to_string(index=False)
+)
+```
+
+# Mejor umbral del Random Forest según F1-score
+
+```{python}
+#| label: seleccionar-umbral-random-forest
+
+fila_mejor_umbral_bosque = (
+    tabla_umbrales_bosque
+    .sort_values(
+        by=[
+            "f1_score",
+            "umbral"
+        ],
+        ascending=[
+            False,
+            True
+        ]
+    )
+    .iloc[0]
+)
+
+umbral_random_forest = float(
+    fila_mejor_umbral_bosque["umbral"]
+)
+
+print(f"Umbral seleccionado: {umbral_random_forest:.2f}")
+print(f"Precision: {fila_mejor_umbral_bosque['precision']:.4f}")
+print(f"Recall: {fila_mejor_umbral_bosque['recall']:.4f}")
+print(f"F1-score: {fila_mejor_umbral_bosque['f1_score']:.4f}")
+print(
+    "Balanced accuracy: "
+    f"{fila_mejor_umbral_bosque['balanced_accuracy']:.4f}"
+)
+```
+
+
+# Otro modelo a probar: XGBoost
+
+Construimos un modelo XGBoost para compararlo con la regresión logística y Random Forest.
+
+La validación final continúa sin utilizarse.
+
+```{python}
+#| label: entrenar-xgboost
+
+from xgboost import XGBClassifier
+
+cantidad_clase_0 = int((y_entrenamiento == 0).sum())
+cantidad_clase_1 = int((y_entrenamiento == 1).sum())
+
+peso_clase_positiva = (
+    cantidad_clase_0 / cantidad_clase_1
+)
+
+print(f"Registros clase 0: {cantidad_clase_0:,}")
+print(f"Registros clase 1: {cantidad_clase_1:,}")
+print(
+    "Peso calculado para la clase positiva: "
+    f"{peso_clase_positiva:.4f}"
+)
+
+pipeline_numerico_xgboost = Pipeline(
+    steps=[
+        (
+            "imputador",
+            SimpleImputer(strategy="median")
+        )
+    ]
+)
+
+pipeline_categorico_xgboost = Pipeline(
+    steps=[
+        (
+            "imputador",
+            SimpleImputer(
+                strategy="constant",
+                fill_value="Sin información"
+            )
+        ),
+        (
+            "codificador",
+            OneHotEncoder(
+                handle_unknown="ignore"
+            )
+        )
+    ]
+)
+
+preprocesador_xgboost = ColumnTransformer(
+    transformers=[
+        (
+            "numericas",
+            pipeline_numerico_xgboost,
+            variables_numericas
+        ),
+        (
+            "categoricas",
+            pipeline_categorico_xgboost,
+            variables_categoricas
+        )
+    ]
+)
+
+modelo_xgboost = Pipeline(
+    steps=[
+        (
+            "preprocesamiento",
+            preprocesador_xgboost
+        ),
+        (
+            "modelo",
+            XGBClassifier(
+                objective="binary:logistic",
+                eval_metric="logloss",
+                n_estimators=500,
+                learning_rate=0.05,
+                max_depth=5,
+                min_child_weight=5,
+                subsample=0.80,
+                colsample_bytree=0.80,
+                reg_alpha=0.0,
+                reg_lambda=1.0,
+                scale_pos_weight=peso_clase_positiva,
+                tree_method="hist",
+                n_jobs=-1,
+                random_state=42
+            )
+        )
+    ]
+)
+
+modelo_xgboost.fit(
+    X_entrenamiento,
+    y_entrenamiento
+)
+
+print("XGBoost entrenado correctamente.")
+```
+
+
+# Evaluación de XGBoost
+
+Evaluamos XGBoost sobre el conjunto de prueba. La validación final continúa sin utilizarse.
+
+```{python}
+#| label: evaluar-xgboost
+
+probabilidades_prueba_xgboost = (
+    modelo_xgboost.predict_proba(X_prueba)[:, 1]
+)
+
+predicciones_prueba_xgboost = (
+    probabilidades_prueba_xgboost >= 0.50
+).astype(int)
+
+metricas_xgboost = {
+    "accuracy": accuracy_score(
+        y_prueba,
+        predicciones_prueba_xgboost
+    ),
+    "balanced_accuracy": balanced_accuracy_score(
+        y_prueba,
+        predicciones_prueba_xgboost
+    ),
+    "precision": precision_score(
+        y_prueba,
+        predicciones_prueba_xgboost,
+        zero_division=0
+    ),
+    "recall": recall_score(
+        y_prueba,
+        predicciones_prueba_xgboost,
+        zero_division=0
+    ),
+    "f1_score": f1_score(
+        y_prueba,
+        predicciones_prueba_xgboost,
+        zero_division=0
+    ),
+    "roc_auc": roc_auc_score(
+        y_prueba,
+        probabilidades_prueba_xgboost
+    ),
+    "pr_auc": average_precision_score(
+        y_prueba,
+        probabilidades_prueba_xgboost
+    )
+}
+
+for nombre_metrica, valor in metricas_xgboost.items():
+    print(f"{nombre_metrica}: {valor:.4f}")
+```
+
+# Matriz de confusión de XGBoost
+
+```{python}
+#| label: matriz-confusion-xgboost
+
+matriz_confusion_xgboost = confusion_matrix(
+    y_prueba,
+    predicciones_prueba_xgboost
+)
+
+verdaderos_negativos_xgboost = matriz_confusion_xgboost[0, 0]
+falsos_positivos_xgboost = matriz_confusion_xgboost[0, 1]
+falsos_negativos_xgboost = matriz_confusion_xgboost[1, 0]
+verdaderos_positivos_xgboost = matriz_confusion_xgboost[1, 1]
+
+print("Matriz de confusión:")
+print(matriz_confusion_xgboost)
+
+print()
+print(f"Verdaderos negativos: {verdaderos_negativos_xgboost:,}")
+print(f"Falsos positivos: {falsos_positivos_xgboost:,}")
+print(f"Falsos negativos: {falsos_negativos_xgboost:,}")
+print(f"Verdaderos positivos: {verdaderos_positivos_xgboost:,}")
+```
+
+# Evaluación de umbrales de XGBoost
+
+Evaluamos distintos umbrales para seleccionar el que maximiza el F1-score en el conjunto de prueba.
+
+```{python}
+#| label: evaluar-umbrales-xgboost
+
+resultados_umbrales_xgboost = []
+
+umbrales_xgboost = np.arange(0.05, 0.95, 0.05)
+
+for umbral in umbrales_xgboost:
+    predicciones_umbral_xgboost = (
+        probabilidades_prueba_xgboost >= umbral
+    ).astype(int)
+
+    matriz_xgboost = confusion_matrix(
+        y_prueba,
+        predicciones_umbral_xgboost
+    )
+
+    resultados_umbrales_xgboost.append(
+        {
+            "umbral": umbral,
+            "precision": precision_score(
+                y_prueba,
+                predicciones_umbral_xgboost,
+                zero_division=0
+            ),
+            "recall": recall_score(
+                y_prueba,
+                predicciones_umbral_xgboost,
+                zero_division=0
+            ),
+            "f1_score": f1_score(
+                y_prueba,
+                predicciones_umbral_xgboost,
+                zero_division=0
+            ),
+            "balanced_accuracy": balanced_accuracy_score(
+                y_prueba,
+                predicciones_umbral_xgboost
+            ),
+            "falsos_positivos": matriz_xgboost[0, 1],
+            "falsos_negativos": matriz_xgboost[1, 0],
+            "verdaderos_positivos": matriz_xgboost[1, 1],
+            "verdaderos_negativos": matriz_xgboost[0, 0]
+        }
+    )
+
+tabla_umbrales_xgboost = pd.DataFrame(
+    resultados_umbrales_xgboost
+)
+
+print(
+    tabla_umbrales_xgboost.round(
+        {
+            "umbral": 2,
+            "precision": 4,
+            "recall": 4,
+            "f1_score": 4,
+            "balanced_accuracy": 4
+        }
+    ).to_string(index=False)
+)
+```
+
+
+# Mejor umbral de XGBoost según F1-score
+
+```{python}
+#| label: seleccionar-umbral-xgboost
+
+fila_mejor_umbral_xgboost = (
+    tabla_umbrales_xgboost
+    .sort_values(
+        by=[
+            "f1_score",
+            "umbral"
+        ],
+        ascending=[
+            False,
+            True
+        ]
+    )
+    .iloc[0]
+)
+
+umbral_xgboost = float(
+    fila_mejor_umbral_xgboost["umbral"]
+)
+
+print(f"Umbral seleccionado: {umbral_xgboost:.2f}")
+print(
+    f"Precision: "
+    f"{fila_mejor_umbral_xgboost['precision']:.4f}"
+)
+print(
+    f"Recall: "
+    f"{fila_mejor_umbral_xgboost['recall']:.4f}"
+)
+print(
+    f"F1-score: "
+    f"{fila_mejor_umbral_xgboost['f1_score']:.4f}"
+)
+print(
+    "Balanced accuracy: "
+    f"{fila_mejor_umbral_xgboost['balanced_accuracy']:.4f}"
+)
+```
+
+# Comparación de modelos
+
+Comparamos los tres modelos utilizando, para cada uno, el umbral que maximiza el F1-score en el conjunto de prueba.
+
+```{python}
+#| label: comparar-modelos
+
+comparacion_modelos = pd.DataFrame(
+    [
+        {
+            "modelo": "Regresión logística",
+            "umbral": umbral_modelo_base,
+            "precision": metricas_umbral_seleccionado["precision"],
+            "recall": metricas_umbral_seleccionado["recall"],
+            "f1_score": metricas_umbral_seleccionado["f1_score"],
+            "balanced_accuracy": metricas_umbral_seleccionado[
+                "balanced_accuracy"
+            ],
+            "roc_auc": metricas_umbral_seleccionado["roc_auc"],
+            "pr_auc": metricas_umbral_seleccionado["pr_auc"]
+        },
+        {
+            "modelo": "Random Forest",
+            "umbral": umbral_random_forest,
+            "precision": fila_mejor_umbral_bosque["precision"],
+            "recall": fila_mejor_umbral_bosque["recall"],
+            "f1_score": fila_mejor_umbral_bosque["f1_score"],
+            "balanced_accuracy": fila_mejor_umbral_bosque[
+                "balanced_accuracy"
+            ],
+            "roc_auc": metricas_random_forest["roc_auc"],
+            "pr_auc": metricas_random_forest["pr_auc"]
+        },
+        {
+            "modelo": "XGBoost",
+            "umbral": umbral_xgboost,
+            "precision": fila_mejor_umbral_xgboost["precision"],
+            "recall": fila_mejor_umbral_xgboost["recall"],
+            "f1_score": fila_mejor_umbral_xgboost["f1_score"],
+            "balanced_accuracy": fila_mejor_umbral_xgboost[
+                "balanced_accuracy"
+            ],
+            "roc_auc": metricas_xgboost["roc_auc"],
+            "pr_auc": metricas_xgboost["pr_auc"]
+        }
+    ]
+)
+
+comparacion_modelos = comparacion_modelos.sort_values(
+    by="f1_score",
+    ascending=False
+).reset_index(drop=True)
+
+print(
+    comparacion_modelos.round(
+        {
+            "umbral": 2,
+            "precision": 4,
+            "recall": 4,
+            "f1_score": 4,
+            "balanced_accuracy": 4,
+            "roc_auc": 4,
+            "pr_auc": 4
+        }
+    ).to_string(index=False)
+)
+```
+
+
+# Ajuste de hiperparámetros de XGBoost con Optuna
+
+Optimizamos los hiperparámetros de XGBoost utilizando únicamente el conjunto de entrenamiento.
+
+La métrica objetivo será `average_precision`, equivalente a PR-AUC.
+
+```{python}
+#| label: ajustar-xgboost-optuna
+
+import optuna
+
+from sklearn.base import clone
+from sklearn.metrics import average_precision_score
+from sklearn.model_selection import StratifiedKFold
+
+optuna.logging.set_verbosity(
+    optuna.logging.WARNING
+)
+
+validacion_cruzada = StratifiedKFold(
+    n_splits=3,
+    shuffle=True,
+    random_state=42
+)
+
+def objetivo_xgboost(trial):
+
+    parametros = {
+        "n_estimators": trial.suggest_int(
+            "n_estimators",
+            300,
+            800,
+            step=100
+        ),
+        "learning_rate": trial.suggest_float(
+            "learning_rate",
+            0.02,
+            0.10,
+            log=True
+        ),
+        "max_depth": trial.suggest_int(
+            "max_depth",
+            3,
+            8
+        ),
+        "min_child_weight": trial.suggest_int(
+            "min_child_weight",
+            1,
+            12
+        ),
+        "subsample": trial.suggest_float(
+            "subsample",
+            0.65,
+            1.00
+        ),
+        "colsample_bytree": trial.suggest_float(
+            "colsample_bytree",
+            0.65,
+            1.00
+        ),
+        "reg_alpha": trial.suggest_float(
+            "reg_alpha",
+            1e-4,
+            1.0,
+            log=True
+        ),
+        "reg_lambda": trial.suggest_float(
+            "reg_lambda",
+            0.5,
+            10.0,
+            log=True
+        )
+    }
+
+    puntajes_pr_auc = []
+
+    for indices_entrenamiento, indices_validacion in (
+        validacion_cruzada.split(
+            X_entrenamiento,
+            y_entrenamiento
+        )
+    ):
+
+        X_entrenamiento_fold = X_entrenamiento.iloc[
+            indices_entrenamiento
+        ]
+
+        X_validacion_fold = X_entrenamiento.iloc[
+            indices_validacion
+        ]
+
+        y_entrenamiento_fold = y_entrenamiento.iloc[
+            indices_entrenamiento
+        ]
+
+        y_validacion_fold = y_entrenamiento.iloc[
+            indices_validacion
+        ]
+
+        cantidad_clase_0_fold = int(
+            (y_entrenamiento_fold == 0).sum()
+        )
+
+        cantidad_clase_1_fold = int(
+            (y_entrenamiento_fold == 1).sum()
+        )
+
+        peso_clase_positiva_fold = (
+            cantidad_clase_0_fold
+            / cantidad_clase_1_fold
+        )
+
+        preprocesador_fold = clone(
+            preprocesador_xgboost
+        )
+
+        modelo_fold = Pipeline(
+            steps=[
+                (
+                    "preprocesamiento",
+                    preprocesador_fold
+                ),
+                (
+                    "modelo",
+                    XGBClassifier(
+                        objective="binary:logistic",
+                        eval_metric="logloss",
+                        scale_pos_weight=(
+                            peso_clase_positiva_fold
+                        ),
+                        tree_method="hist",
+                        n_jobs=-1,
+                        random_state=42,
+                        **parametros
+                    )
+                )
+            ]
+        )
+
+        modelo_fold.fit(
+            X_entrenamiento_fold,
+            y_entrenamiento_fold
+        )
+
+        probabilidades_fold = (
+            modelo_fold.predict_proba(
+                X_validacion_fold
+            )[:, 1]
+        )
+
+        pr_auc_fold = average_precision_score(
+            y_validacion_fold,
+            probabilidades_fold
+        )
+
+        puntajes_pr_auc.append(
+            pr_auc_fold
+        )
+
+    return float(
+        np.mean(puntajes_pr_auc)
+    )
+
+muestreador_optuna = optuna.samplers.TPESampler(
+    seed=42
+)
+
+estudio_xgboost = optuna.create_study(
+    direction="maximize",
+    sampler=muestreador_optuna,
+    study_name="optimizacion_xgboost_pr_auc"
+)
+
+estudio_xgboost.optimize(
+    objetivo_xgboost,
+    n_trials=30,
+    show_progress_bar=True
+)
+
+print("Mejor PR-AUC promedio:")
+print(f"{estudio_xgboost.best_value:.4f}")
+
+print()
+print("Mejores hiperparámetros:")
+
+for parametro, valor in (
+    estudio_xgboost.best_params.items()
+):
+    print(f"- {parametro}: {valor}")
+```
+
+
+```{python}
+import sys
+import optuna
+
+print(sys.executable)
+print(optuna.__version__)
+```
+
+
+# Entrenamiento del XGBoost ajustado
+
+Entrenamos nuevamente XGBoost sobre todo el conjunto de entrenamiento utilizando los mejores hiperparámetros encontrados por Optuna.
+
+```{python}
+#| label: entrenar-xgboost-ajustado
+
+mejores_parametros_xgboost = (
+    estudio_xgboost.best_params.copy()
+)
+
+modelo_xgboost_ajustado = Pipeline(
+    steps=[
+        (
+            "preprocesamiento",
+            clone(preprocesador_xgboost)
+        ),
+        (
+            "modelo",
+            XGBClassifier(
+                objective="binary:logistic",
+                eval_metric="logloss",
+                scale_pos_weight=peso_clase_positiva,
+                tree_method="hist",
+                n_jobs=-1,
+                random_state=42,
+                **mejores_parametros_xgboost
+            )
+        )
+    ]
+)
+
+modelo_xgboost_ajustado.fit(
+    X_entrenamiento,
+    y_entrenamiento
+)
+
+print("XGBoost ajustado entrenado correctamente.")
+
+print()
+print("Hiperparámetros utilizados:")
+
+for parametro, valor in mejores_parametros_xgboost.items():
+    print(f"- {parametro}: {valor}")
+```
+
+# Evaluación del XGBoost ajustado
+
+Evaluamos la capacidad de discriminación del modelo ajustado sobre el conjunto de prueba.
+
+La validación final continúa sin utilizarse.
+
+```{python}
+#| label: evaluar-xgboost-ajustado
+
+probabilidades_prueba_xgboost_ajustado = (
+    modelo_xgboost_ajustado.predict_proba(
+        X_prueba
+    )[:, 1]
+)
+
+roc_auc_xgboost_ajustado = roc_auc_score(
+    y_prueba,
+    probabilidades_prueba_xgboost_ajustado
+)
+
+pr_auc_xgboost_ajustado = average_precision_score(
+    y_prueba,
+    probabilidades_prueba_xgboost_ajustado
+)
+
+print(
+    "ROC-AUC XGBoost ajustado: "
+    f"{roc_auc_xgboost_ajustado:.4f}"
+)
+
+print(
+    "PR-AUC XGBoost ajustado: "
+    f"{pr_auc_xgboost_ajustado:.4f}"
+)
+```
+
+# Selección del umbral del XGBoost ajustado
+
+Buscamos el umbral que maximiza el F1-score en el conjunto de prueba.
+
+```{python}
+#| label: seleccionar-umbral-xgboost-ajustado
+
+resultados_umbrales_xgboost_ajustado = []
+
+umbrales_xgboost_ajustado = np.arange(
+    0.05,
+    0.96,
+    0.01
+)
+
+for umbral in umbrales_xgboost_ajustado:
+
+    predicciones_umbral = (
+        probabilidades_prueba_xgboost_ajustado
+        >= umbral
+    ).astype(int)
+
+    matriz = confusion_matrix(
+        y_prueba,
+        predicciones_umbral
+    )
+
+    resultados_umbrales_xgboost_ajustado.append(
+        {
+            "umbral": umbral,
+            "precision": precision_score(
+                y_prueba,
+                predicciones_umbral,
+                zero_division=0
+            ),
+            "recall": recall_score(
+                y_prueba,
+                predicciones_umbral,
+                zero_division=0
+            ),
+            "f1_score": f1_score(
+                y_prueba,
+                predicciones_umbral,
+                zero_division=0
+            ),
+            "balanced_accuracy": balanced_accuracy_score(
+                y_prueba,
+                predicciones_umbral
+            ),
+            "falsos_positivos": matriz[0, 1],
+            "falsos_negativos": matriz[1, 0],
+            "verdaderos_positivos": matriz[1, 1],
+            "verdaderos_negativos": matriz[0, 0]
+        }
+    )
+
+tabla_umbrales_xgboost_ajustado = pd.DataFrame(
+    resultados_umbrales_xgboost_ajustado
+)
+
+fila_mejor_umbral_xgboost_ajustado = (
+    tabla_umbrales_xgboost_ajustado
+    .sort_values(
+        by=[
+            "f1_score",
+            "umbral"
+        ],
+        ascending=[
+            False,
+            True
+        ]
+    )
+    .iloc[0]
+)
+
+umbral_xgboost_ajustado = float(
+    fila_mejor_umbral_xgboost_ajustado[
+        "umbral"
+    ]
+)
+
+print(
+    f"Umbral seleccionado: "
+    f"{umbral_xgboost_ajustado:.2f}"
+)
+
+print(
+    "Precision: "
+    f"{fila_mejor_umbral_xgboost_ajustado['precision']:.4f}"
+)
+
+print(
+    "Recall: "
+    f"{fila_mejor_umbral_xgboost_ajustado['recall']:.4f}"
+)
+
+print(
+    "F1-score: "
+    f"{fila_mejor_umbral_xgboost_ajustado['f1_score']:.4f}"
+)
+
+print(
+    "Balanced accuracy: "
+    f"{fila_mejor_umbral_xgboost_ajustado['balanced_accuracy']:.4f}"
+)
+```
+
+
+# Selección del modelo definitivo
+
+Se selecciona el XGBoost ajustado con Optuna como modelo definitivo.
+
+El umbral de clasificación se fija en `0,77`, seleccionado previamente en el conjunto de prueba mediante la maximización del F1-score.
+
+A partir de este momento, tanto el modelo como el umbral quedan bloqueados antes de evaluar la validación final.
+
+```{python}
+#| label: definir-modelo-definitivo
+
+modelo_definitivo = modelo_xgboost_ajustado
+umbral_definitivo = umbral_xgboost_ajustado
+
+print("Modelo definitivo: XGBoost ajustado")
+print(f"Umbral definitivo: {umbral_definitivo:.2f}")
+print("Criterio de selección: máximo F1-score en prueba")
+```
+
+# Evaluación sobre la validación final
+
+Evaluamos el modelo definitivo sobre el 10% de los datos que se mantuvo completamente separado durante el entrenamiento, la comparación de modelos y el ajuste de hiperparámetros.
+
+```{python}
+#| label: evaluar-validacion-final
+
+probabilidades_validacion_final = (
+    modelo_definitivo.predict_proba(
+        X_validacion_final
+    )[:, 1]
+)
+
+predicciones_validacion_final = (
+    probabilidades_validacion_final
+    >= umbral_definitivo
+).astype(int)
+
+metricas_validacion_final = {
+    "accuracy": accuracy_score(
+        y_validacion_final,
+        predicciones_validacion_final
+    ),
+    "balanced_accuracy": balanced_accuracy_score(
+        y_validacion_final,
+        predicciones_validacion_final
+    ),
+    "precision": precision_score(
+        y_validacion_final,
+        predicciones_validacion_final,
+        zero_division=0
+    ),
+    "recall": recall_score(
+        y_validacion_final,
+        predicciones_validacion_final,
+        zero_division=0
+    ),
+    "f1_score": f1_score(
+        y_validacion_final,
+        predicciones_validacion_final,
+        zero_division=0
+    ),
+    "roc_auc": roc_auc_score(
+        y_validacion_final,
+        probabilidades_validacion_final
+    ),
+    "pr_auc": average_precision_score(
+        y_validacion_final,
+        probabilidades_validacion_final
+    )
+}
+
+for nombre_metrica, valor in metricas_validacion_final.items():
+    print(f"{nombre_metrica}: {valor:.4f}")
+```
+
+# Matriz de confusión de la validación final
+
+```{python}
+#| label: matriz-confusion-validacion-final
+
+matriz_validacion_final = confusion_matrix(
+    y_validacion_final,
+    predicciones_validacion_final
+)
+
+verdaderos_negativos_final = matriz_validacion_final[0, 0]
+falsos_positivos_final = matriz_validacion_final[0, 1]
+falsos_negativos_final = matriz_validacion_final[1, 0]
+verdaderos_positivos_final = matriz_validacion_final[1, 1]
+
+print("Matriz de confusión:")
+print(matriz_validacion_final)
+
+print()
+print(f"Verdaderos negativos: {verdaderos_negativos_final:,}")
+print(f"Falsos positivos: {falsos_positivos_final:,}")
+print(f"Falsos negativos: {falsos_negativos_final:,}")
+print(f"Verdaderos positivos: {verdaderos_positivos_final:,}")
+```
+
+
+# Comparación entre prueba y validación final
+
+Comparamos el desempeño del modelo definitivo en ambos conjuntos para revisar su estabilidad.
+
+```{python}
+#| label: comparar-prueba-validacion-final
+
+comparacion_final = pd.DataFrame(
+    [
+        {
+            "conjunto": "Prueba",
+            "precision": (
+                fila_mejor_umbral_xgboost_ajustado["precision"]
+            ),
+            "recall": (
+                fila_mejor_umbral_xgboost_ajustado["recall"]
+            ),
+            "f1_score": (
+                fila_mejor_umbral_xgboost_ajustado["f1_score"]
+            ),
+            "balanced_accuracy": (
+                fila_mejor_umbral_xgboost_ajustado[
+                    "balanced_accuracy"
+                ]
+            ),
+            "roc_auc": roc_auc_xgboost_ajustado,
+            "pr_auc": pr_auc_xgboost_ajustado
+        },
+        {
+            "conjunto": "Validación final",
+            "precision": metricas_validacion_final["precision"],
+            "recall": metricas_validacion_final["recall"],
+            "f1_score": metricas_validacion_final["f1_score"],
+            "balanced_accuracy": (
+                metricas_validacion_final[
+                    "balanced_accuracy"
+                ]
+            ),
+            "roc_auc": metricas_validacion_final["roc_auc"],
+            "pr_auc": metricas_validacion_final["pr_auc"]
+        }
+    ]
+)
+
+print(
+    comparacion_final.round(4).to_string(index=False)
+)
+```
+
+# Guardado del modelo y resultados
+
+Guardamos el pipeline completo, el umbral definitivo, los hiperparámetros y las métricas de validación final.
+
+```{python}
+#| label: guardar-modelo-resultados
+
+import json
+import joblib
+
+carpeta_modelos = raiz_proyecto / "models"
+carpeta_modelos.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+ruta_modelo = (
+    carpeta_modelos
+    / "modelo_riesgo_xgboost.joblib"
+)
+
+ruta_configuracion = (
+    carpeta_modelos
+    / "configuracion_modelo_riesgo.json"
+)
+
+ruta_metricas = (
+    carpeta_modelos
+    / "metricas_validacion_final.csv"
+)
+
+joblib.dump(
+    modelo_definitivo,
+    ruta_modelo
+)
+
+configuracion_modelo = {
+    "modelo": "XGBoost",
+    "umbral_definitivo": float(
+        umbral_definitivo
+    ),
+    "criterio_umbral": "maximo_f1_en_prueba",
+    "hiperparametros": {
+        clave: (
+            valor.item()
+            if hasattr(valor, "item")
+            else valor
+        )
+        for clave, valor in mejores_parametros_xgboost.items()
+    },
+    "variables_predictoras": variables_predictoras
+}
+
+with open(
+    ruta_configuracion,
+    "w",
+    encoding="utf-8"
+) as archivo:
+    json.dump(
+        configuracion_modelo,
+        archivo,
+        ensure_ascii=False,
+        indent=4
+    )
+
+pd.DataFrame(
+    [metricas_validacion_final]
+).to_csv(
+    ruta_metricas,
+    index=False
+)
+
+print(f"Modelo guardado en: {ruta_modelo}")
+print(f"Configuración guardada en: {ruta_configuracion}")
+print(f"Métricas guardadas en: {ruta_metricas}")
+```
+
+
+# Cierre de recursos
+
+Cerramos explícitamente la conexión de solo lectura utilizada durante el modelamiento.
+
+```{python}
+#| label: cerrar-conexion-duckdb
+
+conexion.close()
+
+print("Conexión con DuckDB cerrada correctamente.")
+```
