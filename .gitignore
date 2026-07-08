@@ -72,3 +72,6 @@ logs/
 
 # Archivos auxiliares generados por Quarto
 reports/**/*_files/
+
+
+.vscode/
