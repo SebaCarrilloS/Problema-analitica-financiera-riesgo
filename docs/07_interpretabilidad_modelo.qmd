@@ -1,0 +1,822 @@
+---
+title: "Interpretabilidad global del modelo de riesgo"
+lang: es
+jupyter: python3
+format:
+  html:
+    toc: true
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Objetivo
+
+Esta fase analiza globalmente el comportamiento del modelo definitivo de riesgo de dificultad de pago.
+
+Las decisiones metodológicas adoptadas son:
+
+- utilizar el conjunto de validación final;
+- seleccionar una muestra aleatoria de 5.000 registros;
+- analizar variables originales y variables transformadas;
+- agrupar las categorías mediante el promedio de `mean(|SHAP|)`;
+- presentar ranking de importancia y gráfico beeswarm;
+- mostrar las 10 variables más relevantes;
+- profundizar en las 3 variables transformadas más importantes;
+- adaptar los gráficos según el tipo numérico o categórico.
+
+# Configuración inicial
+
+```{python}
+#| label: configuracion-inicial
+
+from pathlib import Path
+import json
+
+import joblib
+import pandas as pd
+import shap
+
+directorio_actual = Path.cwd()
+
+if directorio_actual.name == "docs":
+    raiz_proyecto = directorio_actual.parent
+else:
+    raiz_proyecto = directorio_actual
+
+ruta_modelo = raiz_proyecto / "models" / "modelo_riesgo_xgboost.joblib"
+ruta_configuracion = raiz_proyecto / "models" / "configuracion_modelo_riesgo.json"
+
+print(f"Raíz del proyecto: {raiz_proyecto}")
+print(f"Modelo encontrado: {ruta_modelo.exists()}")
+print(f"Configuración encontrada: {ruta_configuracion.exists()}")
+print(f"Versión de SHAP: {shap.__version__}")
+```
+
+# Inspección de los artefactos
+
+Antes de calcular SHAP, revisamos cómo quedaron almacenados el modelo y su configuración.
+
+```{python}
+#| label: inspeccion-artefactos
+
+artefacto_modelo = joblib.load(ruta_modelo)
+
+with open(ruta_configuracion, "r", encoding="utf-8") as archivo:
+    configuracion_modelo = json.load(archivo)
+
+print("Tipo del artefacto:")
+print(type(artefacto_modelo))
+
+print("\nContenido del artefacto:")
+if isinstance(artefacto_modelo, dict):
+    print(list(artefacto_modelo.keys()))
+elif hasattr(artefacto_modelo, "named_steps"):
+    print(artefacto_modelo.named_steps.keys())
+else:
+    print(artefacto_modelo)
+
+print("\nClaves de la configuración:")
+print(list(configuracion_modelo.keys()))
+```
+
+
+# Configuración del modelo definitivo
+
+```{python}
+#| label: estructura-modelo
+
+preprocesamiento = artefacto_modelo.named_steps["preprocesamiento"]
+modelo_xgboost = artefacto_modelo.named_steps["modelo"]
+
+variables_predictoras = configuracion_modelo["variables_predictoras"]
+umbral_definitivo = configuracion_modelo["umbral_definitivo"]
+
+print(f"Modelo final: {configuracion_modelo['modelo']}")
+print(f"Umbral definitivo: {umbral_definitivo}")
+print(f"Cantidad de variables predictoras: {len(variables_predictoras)}")
+print(f"Clase del modelo: {type(modelo_xgboost)}")
+
+print("\nTransformaciones del preprocesamiento:")
+for nombre, transformador, columnas in preprocesamiento.transformers:
+    print(
+        f"- {nombre}: "
+        f"{len(columnas)} columnas"
+    )
+
+print("\nPrimeras 10 variables predictoras:")
+for variable in variables_predictoras[:10]:
+    print(f"- {variable}")
+```
+
+
+# Reconstrucción del conjunto de validación final
+
+Cargamos desde DuckDB las mismas variables utilizadas en el modelo y reproducimos exactamente la partición aplicada durante el entrenamiento.
+
+```{python}
+#| label: reconstruir-validacion-final
+
+import duckdb
+from sklearn.model_selection import train_test_split
+
+ruta_base = (
+    raiz_proyecto
+    / "data"
+    / "database"
+    / "financiera.duckdb"
+)
+
+conexion = duckdb.connect(
+    database=str(ruta_base),
+    read_only=True
+)
+
+variable_objetivo = "flag_dificultad_pago"
+nombre_tabla = "cst_data.cartera_clientes_train"
+
+variables_numericas = list(
+    preprocesamiento.transformers_[0][2]
+)
+
+variables_categoricas = list(
+    preprocesamiento.transformers_[1][2]
+)
+
+columnas_seleccionadas = (
+    variables_predictoras
+    + [variable_objetivo]
+)
+
+columnas_sql = ",\n        ".join(
+    (
+        f'CAST("{columna}" AS VARCHAR) AS "{columna}"'
+        if columna in variables_categoricas
+        else f'"{columna}"'
+    )
+    for columna in columnas_seleccionadas
+)
+
+datos_modelamiento = conexion.execute(
+    f"""
+    SELECT
+        {columnas_sql}
+    FROM {nombre_tabla}
+    """
+).df()
+
+X = datos_modelamiento[variables_predictoras].copy()
+y = datos_modelamiento[variable_objetivo].copy()
+
+X_entrenamiento, X_temporal, y_entrenamiento, y_temporal = (
+    train_test_split(
+        X,
+        y,
+        test_size=0.30,
+        random_state=42,
+        stratify=y
+    )
+)
+
+X_prueba, X_validacion_final, y_prueba, y_validacion_final = (
+    train_test_split(
+        X_temporal,
+        y_temporal,
+        test_size=1 / 3,
+        random_state=42,
+        stratify=y_temporal
+    )
+)
+
+print(f"Total de registros: {len(X):,}")
+print(f"Entrenamiento: {len(X_entrenamiento):,}")
+print(f"Prueba: {len(X_prueba):,}")
+print(f"Validación final: {len(X_validacion_final):,}")
+
+print()
+print("Proporción de dificultad de pago:")
+print(f"Total: {y.mean():.4%}")
+print(f"Entrenamiento: {y_entrenamiento.mean():.4%}")
+print(f"Prueba: {y_prueba.mean():.4%}")
+print(f"Validación final: {y_validacion_final.mean():.4%}")
+```
+
+# Selección de la muestra para interpretabilidad
+
+Se selecciona una muestra aleatoria reproducible de 5.000 clientes desde el conjunto de validación final.
+
+```{python}
+#| label: muestra-interpretabilidad
+
+TAMANIO_MUESTRA = 5_000
+SEMILLA_MUESTRA = 42
+
+X_muestra = X_validacion_final.sample(
+    n=TAMANIO_MUESTRA,
+    random_state=SEMILLA_MUESTRA
+).copy()
+
+y_muestra = y_validacion_final.loc[X_muestra.index].copy()
+
+print(f"Registros seleccionados: {len(X_muestra):,}")
+print(
+    "Proporción de dificultad de pago en la muestra: "
+    f"{y_muestra.mean():.4%}"
+)
+print(
+    "Proporción de dificultad de pago en validación final: "
+    f"{y_validacion_final.mean():.4%}"
+)
+```
+
+# Transformación de las variables
+
+Aplicamos exclusivamente el componente de preprocesamiento del pipeline. Esto reproduce las transformaciones utilizadas por el modelo antes de generar las predicciones.
+
+```{python}
+#| label: transformar-muestra
+
+import numpy as np
+
+X_muestra_transformada = preprocesamiento.transform(X_muestra)
+
+nombres_variables_transformadas = (
+    preprocesamiento.get_feature_names_out()
+)
+
+print(
+    "Forma de la matriz original: "
+    f"{X_muestra.shape}"
+)
+print(
+    "Forma de la matriz transformada: "
+    f"{X_muestra_transformada.shape}"
+)
+print(
+    "Cantidad de nombres transformados: "
+    f"{len(nombres_variables_transformadas)}"
+)
+```
+
+# Cálculo de valores SHAP
+
+Utilizamos `TreeExplainer`, diseñado para modelos basados en árboles, como el XGBoost definitivo.
+
+```{python}
+#| label: calcular-shap
+
+explicador_shap = shap.TreeExplainer(modelo_xgboost)
+
+valores_shap = explicador_shap(
+    X_muestra_transformada
+)
+
+valores_shap.feature_names = list(
+    nombres_variables_transformadas
+)
+
+print(f"Tipo del resultado: {type(valores_shap)}")
+print(f"Forma de los valores SHAP: {valores_shap.values.shape}")
+print(f"Forma de los datos explicados: {valores_shap.data.shape}")
+```
+
+
+# Inspección de variables transformadas
+
+Revisamos los nombres generados por el preprocesamiento para distinguir variables numéricas y categorías creadas mediante one-hot encoding.
+
+```{python}
+#| label: inspeccionar-nombres-transformados
+
+print("Primeras 25 variables transformadas:\n")
+
+for nombre in nombres_variables_transformadas[:25]:
+    print(nombre)
+
+print("\nÚltimas 25 variables transformadas:\n")
+
+for nombre in nombres_variables_transformadas[-25:]:
+    print(nombre)
+```
+
+# Construcción del ranking global de importancia
+
+La importancia global se calcula como el promedio del valor absoluto de SHAP para cada variable:
+
+\[
+\text{Importancia}_j = \operatorname{mean}(|SHAP_j|)
+\]
+
+Para las variables categóricas, las columnas generadas por one-hot encoding se agrupan según su variable original mediante el promedio de sus importancias.
+
+```{python}
+#| label: ranking-importancia-global
+
+def obtener_variable_original(nombre_transformado):
+    """
+    Recupera la variable original desde el nombre generado
+    por ColumnTransformer y OneHotEncoder.
+    """
+
+    if nombre_transformado.startswith("numericas__"):
+        return nombre_transformado.replace(
+            "numericas__",
+            "",
+            1
+        )
+
+    if nombre_transformado.startswith("categoricas__"):
+        nombre_sin_prefijo = nombre_transformado.replace(
+            "categoricas__",
+            "",
+            1
+        )
+
+        # Se ordenan de mayor a menor longitud para evitar
+        # confundir variables cuyos nombres comparten prefijos.
+        variables_ordenadas = sorted(
+            variables_categoricas,
+            key=len,
+            reverse=True
+        )
+
+        for variable in variables_ordenadas:
+            if nombre_sin_prefijo.startswith(f"{variable}_"):
+                return variable
+
+    return None
+
+
+importancia_media_absoluta = np.abs(
+    valores_shap.values
+).mean(axis=0)
+
+tabla_importancia_transformada = pd.DataFrame(
+    {
+        "variable_transformada": nombres_variables_transformadas,
+        "importancia_shap": importancia_media_absoluta
+    }
+)
+
+tabla_importancia_transformada["variable_original"] = (
+    tabla_importancia_transformada[
+        "variable_transformada"
+    ].apply(obtener_variable_original)
+)
+
+variables_sin_mapear = tabla_importancia_transformada[
+    "variable_original"
+].isna().sum()
+
+print(
+    "Variables transformadas sin correspondencia: "
+    f"{variables_sin_mapear}"
+)
+
+tabla_importancia_transformada = (
+    tabla_importancia_transformada
+    .sort_values(
+        "importancia_shap",
+        ascending=False
+    )
+    .reset_index(drop=True)
+)
+
+tabla_importancia_original = (
+    tabla_importancia_transformada
+    .groupby(
+        "variable_original",
+        as_index=False
+    )
+    .agg(
+        importancia_shap_promedio=(
+            "importancia_shap",
+            "mean"
+        ),
+        cantidad_variables_transformadas=(
+            "variable_transformada",
+            "count"
+        )
+    )
+    .sort_values(
+        "importancia_shap_promedio",
+        ascending=False
+    )
+    .reset_index(drop=True)
+)
+
+print(
+    "Variables transformadas analizadas: "
+    f"{len(tabla_importancia_transformada)}"
+)
+print(
+    "Variables originales agrupadas: "
+    f"{len(tabla_importancia_original)}"
+)
+```
+
+## Top 10 de variables transformadas
+
+```{python}
+#| label: top-10-transformadas
+
+top_10_transformadas = (
+    tabla_importancia_transformada
+    .head(10)
+    .copy()
+)
+
+top_10_transformadas[
+    [
+        "variable_transformada",
+        "variable_original",
+        "importancia_shap"
+    ]
+]
+```
+
+## Top 10 de variables originales
+
+```{python}
+#| label: top-10-originales
+
+top_10_originales = (
+    tabla_importancia_original
+    .head(10)
+    .copy()
+)
+
+top_10_originales
+```
+
+
+# Visualización de la importancia global
+
+## Ranking de variables originales
+
+El siguiente gráfico presenta las diez variables originales con mayor importancia SHAP promedio.
+
+```{python}
+#| label: grafico-top-originales
+#| fig-width: 9
+#| fig-height: 6
+
+import matplotlib.pyplot as plt
+
+datos_grafico_originales = (
+    top_10_originales
+    .sort_values(
+        "importancia_shap_promedio",
+        ascending=True
+    )
+)
+
+plt.figure(figsize=(9, 6))
+
+plt.barh(
+    datos_grafico_originales["variable_original"],
+    datos_grafico_originales["importancia_shap_promedio"]
+)
+
+plt.xlabel("Importancia SHAP promedio")
+plt.ylabel("Variable original")
+plt.title("Top 10 de variables originales por importancia global")
+plt.tight_layout()
+plt.show()
+```
+
+## Ranking de variables transformadas
+
+Este ranking conserva el detalle de las categorías generadas mediante one-hot encoding.
+
+```{python}
+#| label: grafico-top-transformadas
+#| fig-width: 10
+#| fig-height: 6
+
+datos_grafico_transformadas = (
+    top_10_transformadas
+    .sort_values(
+        "importancia_shap",
+        ascending=True
+    )
+    .copy()
+)
+
+datos_grafico_transformadas["nombre_grafico"] = (
+    datos_grafico_transformadas[
+        "variable_transformada"
+    ]
+    .str.replace(
+        "numericas__",
+        "",
+        regex=False
+    )
+    .str.replace(
+        "categoricas__",
+        "",
+        regex=False
+    )
+)
+
+plt.figure(figsize=(10, 6))
+
+plt.barh(
+    datos_grafico_transformadas["nombre_grafico"],
+    datos_grafico_transformadas["importancia_shap"]
+)
+
+plt.xlabel("Media del valor absoluto de SHAP")
+plt.ylabel("Variable transformada")
+plt.title("Top 10 de variables transformadas por importancia global")
+plt.tight_layout()
+plt.show()
+```
+
+# Dirección y distribución del efecto
+
+El gráfico beeswarm complementa el ranking de importancia. Cada punto representa un cliente:
+
+- valores SHAP positivos empujan la predicción hacia mayor riesgo;
+- valores SHAP negativos empujan la predicción hacia menor riesgo;
+- el color representa el valor observado de la variable.
+
+```{python}
+#| label: grafico-beeswarm
+#| fig-width: 11
+#| fig-height: 7
+
+nombres_limpios = [
+    nombre
+    .replace("numericas__", "")
+    .replace("categoricas__", "")
+    for nombre in nombres_variables_transformadas
+]
+
+valores_shap_grafico = shap.Explanation(
+    values=valores_shap.values,
+    base_values=valores_shap.base_values,
+    data=valores_shap.data,
+    feature_names=nombres_limpios
+)
+
+shap.plots.beeswarm(
+    valores_shap_grafico,
+    max_display=10,
+    show=False
+)
+
+plt.title(
+    "Dirección y distribución del efecto de las variables"
+)
+plt.tight_layout()
+plt.show()
+```
+
+## Lectura del gráfico SHAP global
+
+El gráfico SHAP global muestra que el modelo se apoya principalmente en variables de score externo, segmento, producto y condiciones financieras del crédito.
+
+La variable más influyente es `score_promedio_externo`. Sus valores altos tienden a desplazar la predicción hacia menor riesgo, mientras que valores bajos aumentan la probabilidad estimada de dificultad de pago. Este comportamiento es consistente con la lógica crediticia esperada.
+
+También destacan variables categóricas transformadas, como `id_segmento_SEG_005` e `id_producto_PROD_004`. En ambos casos, la presencia de esas categorías empuja la predicción hacia mayor riesgo. Esto sugiere que ciertos segmentos y productos concentran perfiles de clientes con mayor probabilidad estimada de dificultad de pago.
+
+La variable `margen_esperado_producto` muestra que valores más altos tienden a asociarse con mayor riesgo estimado. Esta relación debe interpretarse como una asociación aprendida por el modelo, no como causalidad directa.
+
+Finalmente, variables como `score_externo_3`, `antiguedad_laboral_anios`, `ratio_credito_bien` y `monto_anualidad` complementan la explicación del riesgo, mostrando que el modelo combina señales externas, estabilidad laboral y características financieras del crédito.
+
+
+# Profundización en las variables transformadas más importantes
+
+Se analizan las tres variables transformadas más relevantes según `mean(|SHAP|)`. Para variables numéricas se utiliza un gráfico de dependencia. Para variables categóricas transformadas mediante one-hot encoding se compara el efecto SHAP entre ausencia y presencia de la categoría.
+
+```{python}
+#| label: seleccionar-top-3-transformadas
+
+top_3_transformadas = (
+    tabla_importancia_transformada
+    .head(3)
+    .copy()
+)
+
+top_3_transformadas[
+    [
+        "variable_transformada",
+        "variable_original",
+        "importancia_shap"
+    ]
+]
+```
+
+```{python}
+
+#| label: preparar-tabla-shap-detalle
+
+if hasattr(X_muestra_transformada, "toarray"):
+    X_muestra_transformada_df = X_muestra_transformada.toarray()
+else:
+    X_muestra_transformada_df = X_muestra_transformada
+
+tabla_shap_detalle = pd.DataFrame(
+    X_muestra_transformada_df,
+    columns=nombres_variables_transformadas
+)
+
+tabla_shap_valores = pd.DataFrame(
+    valores_shap.values,
+    columns=nombres_variables_transformadas
+)
+
+print("Tablas preparadas para análisis de detalle.")
+print(f"Datos transformados: {tabla_shap_detalle.shape}")
+print(f"Valores SHAP: {tabla_shap_valores.shape}")
+
+```
+
+
+## Función auxiliar para gráficos de detalle
+
+```{python}
+#| label: funcion-grafico-detalle-shap
+
+def graficar_detalle_variable_shap(variable_transformada):
+    """
+    Genera un gráfico de detalle adaptado al tipo de variable:
+    - numérica: dispersión entre valor de la variable y valor SHAP;
+    - categórica one-hot: boxplot SHAP para ausencia/presencia.
+    """
+
+    valores_variable = tabla_shap_detalle[variable_transformada]
+    valores_shap_variable = tabla_shap_valores[variable_transformada]
+
+    nombre_limpio = (
+        variable_transformada
+        .replace("numericas__", "")
+        .replace("categoricas__", "")
+    )
+
+    valores_unicos = set(
+        pd.Series(valores_variable)
+        .dropna()
+        .unique()
+    )
+
+    es_binaria = valores_unicos.issubset({0, 1, 0.0, 1.0})
+
+    if es_binaria:
+        datos_plot = pd.DataFrame(
+            {
+                "valor_categoria": valores_variable,
+                "valor_shap": valores_shap_variable
+            }
+        )
+
+        plt.figure(figsize=(9, 5))
+
+        datos_plot.boxplot(
+            column="valor_shap",
+            by="valor_categoria",
+            grid=False
+        )
+
+        plt.suptitle("")
+        plt.title(
+            f"Efecto SHAP según ausencia o presencia de {nombre_limpio}"
+        )
+        plt.xlabel("Valor de la variable one-hot")
+        plt.ylabel("Valor SHAP")
+        plt.tight_layout()
+        plt.show()
+
+    else:
+        plt.figure(figsize=(9, 5))
+
+        plt.scatter(
+            valores_variable,
+            valores_shap_variable,
+            alpha=0.25
+        )
+
+        plt.axhline(
+            0,
+            linestyle="--",
+            linewidth=1
+        )
+
+        plt.title(
+            f"Dependencia SHAP de {nombre_limpio}"
+        )
+        plt.xlabel(nombre_limpio)
+        plt.ylabel("Valor SHAP")
+        plt.tight_layout()
+        plt.show()
+```
+
+## Gráficos de detalle para las 3 variables principales
+
+```{python}
+#| label: graficos-top-3-shap
+#| fig-width: 9
+#| fig-height: 5
+
+for variable in top_3_transformadas["variable_transformada"]:
+    print(f"Variable analizada: {variable}")
+    graficar_detalle_variable_shap(variable)
+```
+
+
+## Interpretación de las variables principales
+
+El análisis detallado de las tres variables transformadas más importantes confirma que el modelo captura patrones consistentes con una lógica de riesgo financiero.
+
+### `score_promedio_externo`
+
+La variable `score_promedio_externo` presenta una relación negativa clara con el riesgo estimado. Valores bajos del score generan valores SHAP positivos, es decir, empujan la predicción hacia mayor riesgo de dificultad de pago. En cambio, valores altos del score generan valores SHAP negativos, reduciendo el riesgo estimado.
+
+Este comportamiento es coherente con la lógica crediticia esperada: clientes con mejores antecedentes externos tienden a presentar menor probabilidad estimada de dificultad de pago.
+
+Además, el efecto no parece completamente lineal. El modelo distingue con especial fuerza los cambios en rangos medios del score, aproximadamente entre 0.35 y 0.55, donde el impacto sobre la predicción cambia rápidamente.
+
+### `id_segmento_SEG_005`
+
+La variable `id_segmento_SEG_005` corresponde a una categoría transformada mediante one-hot encoding. Su valor es 1 cuando el cliente pertenece al segmento `SEG_005` y 0 cuando no pertenece a ese segmento.
+
+El gráfico muestra que la presencia de esta categoría aumenta fuertemente la salida del modelo. Por lo tanto, pertenecer a `SEG_005` está asociado a un mayor riesgo estimado de dificultad de pago.
+
+Este resultado debe interpretarse como una asociación aprendida por el modelo, no como causalidad directa. El segmento puede estar capturando características comerciales, crediticias o de comportamiento que concentran clientes de mayor riesgo.
+
+### `margen_esperado_producto`
+
+La variable `margen_esperado_producto` muestra un patrón discreto, con pocos valores posibles. Esto sugiere que el margen esperado está asociado a tipos específicos de producto o condiciones comerciales predefinidas.
+
+Los valores bajos y medios de margen tienden a reducir el riesgo estimado, mientras que el valor más alto observado, cercano a 0.28, aumenta fuertemente el riesgo estimado.
+
+Una interpretación plausible es que ciertos productos de mayor margen estén asociados a clientes, segmentos o condiciones crediticias de mayor riesgo. Esto es coherente con una lógica financiera donde mayor riesgo puede estar acompañado de mayor margen esperado. Sin embargo, esta relación debe leerse como asociación y no como causalidad.
+
+### Lectura conjunta
+
+En conjunto, las tres variables principales muestran que el modelo combina distintas fuentes de información:
+
+- señales externas de riesgo crediticio;
+- segmentación del cliente;
+- características económicas del producto.
+
+Esto indica que el modelo no depende exclusivamente de un score externo, sino que integra información financiera, comercial y de segmentación para estimar la dificultad de pago.
+
+
+# Conclusiones de interpretabilidad global
+
+El análisis SHAP permite concluir que el modelo XGBoost definitivo presenta un comportamiento global interpretable y coherente con el problema de riesgo financiero.
+
+Las variables más relevantes corresponden principalmente a scores externos, segmentos de cliente, productos y condiciones económicas del crédito. En particular, `score_promedio_externo` aparece como la señal más importante del modelo, con una relación clara: mejores scores reducen el riesgo estimado y peores scores lo aumentan.
+
+También destacan variables categóricas asociadas a segmentos y productos específicos, especialmente `id_segmento_SEG_005` e `id_producto_PROD_004`. Esto indica que el modelo identifica grupos de clientes y productos con perfiles de riesgo diferenciados.
+
+La variable `margen_esperado_producto` aporta una lectura relevante desde el punto de vista financiero, ya que sugiere una asociación entre mayor margen esperado y mayor riesgo estimado. Esta relación puede reflejar que ciertos productos de mayor rentabilidad esperada están vinculados a clientes o condiciones crediticias más riesgosas.
+
+Desde una perspectiva de uso profesional, estos resultados son útiles porque permiten pasar desde un modelo predictivo tipo caja negra hacia una herramienta más explicable. El modelo no solo entrega una probabilidad de dificultad de pago, sino que también permite identificar las principales señales que explican el riesgo a nivel global.
+
+Como limitación, los resultados SHAP deben interpretarse como asociaciones aprendidas por el modelo y no como relaciones causales. Para una implementación productiva, sería recomendable complementar este análisis con validaciones de negocio, revisión de estabilidad temporal y monitoreo periódico de las variables más influyentes.
+
+
+# Exportación de resultados SHAP
+
+Se exportan las tablas de importancia global para facilitar su reutilización en informes, auditorías o visualizaciones posteriores.
+
+```{python}
+#| label: exportar-tablas-shap
+
+ruta_tablas = raiz_proyecto / "reports" / "tables"
+ruta_tablas.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+ruta_importancia_transformada = (
+    ruta_tablas
+    / "importancia_shap_variables_transformadas.csv"
+)
+
+ruta_importancia_original = (
+    ruta_tablas
+    / "importancia_shap_variables_originales.csv"
+)
+
+tabla_importancia_transformada.to_csv(
+    ruta_importancia_transformada,
+    index=False,
+    encoding="utf-8-sig"
+)
+
+tabla_importancia_original.to_csv(
+    ruta_importancia_original,
+    index=False,
+    encoding="utf-8-sig"
+)
+
+print("Tablas exportadas correctamente:")
+print(ruta_importancia_transformada)
+print(ruta_importancia_original)
+```
