@@ -1,0 +1,502 @@
+---
+title: "Scoring operativo de riesgo"
+lang: es
+jupyter: python3
+format:
+  html:
+    toc: true
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Objetivo
+
+El objetivo de esta fase es aplicar el modelo definitivo de riesgo sobre toda la cartera disponible en `cst_data.cartera_clientes_train`.
+
+La salida será una tabla de scoring operativo que incluirá:
+
+- probabilidad estimada de dificultad de pago;
+- clasificación binaria según el umbral definitivo del modelo;
+- banda de riesgo por percentiles;
+- variables analíticas relevantes del cliente, producto, canal y segmento;
+- variables explicativas principales detectadas en la fase SHAP;
+- persistencia en DuckDB;
+- exportación a CSV para consumo externo o Power BI.
+
+# Decisiones metodológicas
+
+Las decisiones adoptadas para esta fase son:
+
+- población objetivo: toda la cartera de modelamiento;
+- tabla fuente: `cst_data.cartera_clientes_train`;
+- bandas de riesgo: percentiles sobre la probabilidad estimada;
+- estrategia de bandas: priorización equilibrada;
+- cortes:
+  - Top 10%: `Crítico`;
+  - 10%–30%: `Alto`;
+  - 30%–60%: `Medio`;
+  - 60%–100%: `Bajo`;
+- salida: tabla en DuckDB y archivo CSV.
+
+# Configuración inicial
+
+```{python}
+#| label: configuracion-inicial
+
+from pathlib import Path
+import json
+
+import duckdb
+import joblib
+import numpy as np
+import pandas as pd
+
+directorio_actual = Path.cwd()
+
+if directorio_actual.name == "docs":
+    raiz_proyecto = directorio_actual.parent
+else:
+    raiz_proyecto = directorio_actual
+
+ruta_base = (
+    raiz_proyecto
+    / "data"
+    / "database"
+    / "financiera.duckdb"
+)
+
+ruta_modelo = (
+    raiz_proyecto
+    / "models"
+    / "modelo_riesgo_xgboost.joblib"
+)
+
+ruta_configuracion = (
+    raiz_proyecto
+    / "models"
+    / "configuracion_modelo_riesgo.json"
+)
+
+print(f"Raíz del proyecto: {raiz_proyecto}")
+print(f"Base DuckDB encontrada: {ruta_base.exists()}")
+print(f"Modelo encontrado: {ruta_modelo.exists()}")
+print(f"Configuración encontrada: {ruta_configuracion.exists()}")
+```
+
+# Carga del modelo definitivo
+
+```{python}
+#| label: carga-modelo
+
+modelo_riesgo = joblib.load(ruta_modelo)
+
+with open(ruta_configuracion, "r", encoding="utf-8") as archivo:
+    configuracion_modelo = json.load(archivo)
+
+variables_predictoras = configuracion_modelo["variables_predictoras"]
+umbral_definitivo = configuracion_modelo["umbral_definitivo"]
+
+print(f"Modelo cargado: {configuracion_modelo['modelo']}")
+print(f"Umbral definitivo: {umbral_definitivo}")
+print(f"Cantidad de variables predictoras: {len(variables_predictoras)}")
+print(f"Tipo de artefacto: {type(modelo_riesgo)}")
+```
+
+# Carga de la cartera completa
+
+Se carga la cartera completa desde `cst_data.cartera_clientes_train`, incluyendo las variables necesarias para generar predicciones y las columnas analíticas disponibles que acompañarán la tabla final de scoring.
+
+```{python}
+#| label: carga-cartera-completa
+
+conexion = duckdb.connect(
+    database=str(ruta_base),
+    read_only=False
+)
+
+nombre_tabla_fuente = "cst_data.cartera_clientes_train"
+
+columnas_tabla = conexion.execute(
+    f"""
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'cst_data'
+      AND table_name = 'cartera_clientes_train'
+    ORDER BY ordinal_position
+    """
+).df()["column_name"].tolist()
+
+columnas_salida_deseadas = [
+    "id_cliente",
+    "flag_dificultad_pago",
+    "tipo_contrato",
+    "genero_limpio",
+    "estado_civil_limpio",
+    "nivel_educacional",
+    "tipo_vivienda_limpio",
+    "tipo_ingreso_limpio",
+    "tipo_ocupacion_limpio",
+    "organizacion_limpia",
+    "region_cliente",
+    "nombre_producto",
+    "id_producto",
+    "nombre_canal",
+    "tipo_canal",
+    "id_segmento",
+    "nombre_segmento",
+    "ingreso_total",
+    "monto_credito",
+    "monto_anualidad",
+    "monto_bien",
+    "score_promedio_externo",
+    "score_externo_3",
+    "margen_esperado_producto"
+]
+
+columnas_salida = [
+    columna
+    for columna in columnas_salida_deseadas
+    if columna in columnas_tabla
+]
+
+columnas_salida_no_disponibles = [
+    columna
+    for columna in columnas_salida_deseadas
+    if columna not in columnas_tabla
+]
+
+columnas_necesarias = list(
+    dict.fromkeys(
+        variables_predictoras
+        + columnas_salida
+    )
+)
+
+columnas_faltantes_modelo = [
+    columna
+    for columna in variables_predictoras
+    if columna not in columnas_tabla
+]
+
+if columnas_faltantes_modelo:
+    raise ValueError(
+        "Faltan variables predictoras requeridas por el modelo: "
+        + ", ".join(columnas_faltantes_modelo)
+    )
+
+columnas_sql = ",\n        ".join(
+    f'"{columna}"'
+    for columna in columnas_necesarias
+)
+
+cartera = conexion.execute(
+    f"""
+    SELECT
+        {columnas_sql}
+    FROM {nombre_tabla_fuente}
+    """
+).df()
+
+print(f"Registros cargados: {len(cartera):,}")
+print(f"Columnas cargadas: {cartera.shape[1]:,}")
+print(f"Clientes únicos: {cartera['id_cliente'].nunique():,}")
+
+print("\nColumnas analíticas no disponibles:")
+print(columnas_salida_no_disponibles)
+
+cartera.head()
+```
+
+# Generación del scoring
+
+Se aplica el modelo definitivo sobre toda la cartera cargada. Para cada cliente se calcula:
+
+- probabilidad estimada de dificultad de pago;
+- clasificación binaria usando el umbral definitivo;
+- ranking percentil de riesgo dentro de la cartera.
+
+```{python}
+#| label: generar-scoring
+
+X_cartera = cartera[variables_predictoras].copy()
+
+probabilidad_riesgo = modelo_riesgo.predict_proba(
+    X_cartera
+)[:, 1]
+
+scoring = cartera[columnas_salida].copy()
+
+scoring["probabilidad_riesgo"] = probabilidad_riesgo
+
+scoring["prediccion_riesgo"] = (
+    scoring["probabilidad_riesgo"] >= umbral_definitivo
+).astype(int)
+
+scoring["ranking_riesgo"] = (
+    scoring["probabilidad_riesgo"]
+    .rank(
+        method="first",
+        ascending=False
+    )
+)
+
+scoring["percentil_riesgo"] = (
+    scoring["ranking_riesgo"]
+    / len(scoring)
+)
+
+print(f"Registros scoreados: {len(scoring):,}")
+print(
+    "Probabilidad mínima: "
+    f"{scoring['probabilidad_riesgo'].min():.4f}"
+)
+print(
+    "Probabilidad promedio: "
+    f"{scoring['probabilidad_riesgo'].mean():.4f}"
+)
+print(
+    "Probabilidad máxima: "
+    f"{scoring['probabilidad_riesgo'].max():.4f}"
+)
+print(
+    "Clientes clasificados como riesgo según umbral: "
+    f"{scoring['prediccion_riesgo'].sum():,}"
+)
+print(
+    "Porcentaje clasificado como riesgo: "
+    f"{scoring['prediccion_riesgo'].mean():.2%}"
+)
+
+scoring.head()
+```
+
+# Asignación de bandas de riesgo
+
+Se asignan bandas de riesgo por percentiles, usando una priorización equilibrada:
+
+- Top 10% de mayor probabilidad: `Crítico`;
+- 10%–30%: `Alto`;
+- 30%–60%: `Medio`;
+- 60%–100%: `Bajo`.
+
+```{python}
+#| label: asignar-bandas-riesgo
+
+condiciones_banda = [
+    scoring["percentil_riesgo"] <= 0.10,
+    scoring["percentil_riesgo"] <= 0.30,
+    scoring["percentil_riesgo"] <= 0.60
+]
+
+valores_banda = [
+    "Crítico",
+    "Alto",
+    "Medio"
+]
+
+scoring["banda_riesgo"] = np.select(
+    condiciones_banda,
+    valores_banda,
+    default="Bajo"
+)
+
+orden_columnas_principales = [
+    "id_cliente",
+    "probabilidad_riesgo",
+    "prediccion_riesgo",
+    "banda_riesgo",
+    "percentil_riesgo",
+    "ranking_riesgo"
+]
+
+columnas_restantes = [
+    columna
+    for columna in scoring.columns
+    if columna not in orden_columnas_principales
+]
+
+scoring = scoring[
+    orden_columnas_principales
+    + columnas_restantes
+]
+
+resumen_bandas = (
+    scoring
+    .groupby("banda_riesgo", as_index=False)
+    .agg(
+        clientes=("id_cliente", "count"),
+        probabilidad_promedio=("probabilidad_riesgo", "mean"),
+        tasa_real_dificultad_pago=("flag_dificultad_pago", "mean"),
+        clientes_predichos_riesgo=("prediccion_riesgo", "sum")
+    )
+    .sort_values(
+        "probabilidad_promedio",
+        ascending=False
+    )
+)
+
+resumen_bandas
+```
+
+
+## Lectura de las bandas de riesgo
+
+La segmentación por percentiles muestra una separación clara entre los niveles de riesgo definidos para la cartera.
+
+La banda `Crítico`, correspondiente al 10% de clientes con mayor probabilidad estimada, concentra una probabilidad promedio de riesgo de aproximadamente 85%. Además, presenta una tasa real de dificultad de pago cercana al 44%, muy superior al promedio general de la cartera. Esto indica que el modelo logra concentrar una proporción relevante de los casos de mayor riesgo en la parte superior del ranking.
+
+La banda `Alto`, que agrupa al siguiente 20% de clientes, presenta una probabilidad promedio cercana al 54% y una tasa real de dificultad de pago cercana al 11%. Aunque estos clientes no superan el umbral definitivo de clasificación, representan un grupo relevante para seguimiento preventivo.
+
+Las bandas `Medio` y `Bajo` muestran probabilidades promedio y tasas reales considerablemente menores. En particular, la banda `Bajo` presenta una tasa real inferior al 1%, lo que confirma que el ranking generado por el modelo permite distinguir adecuadamente entre clientes de mayor y menor riesgo.
+
+Es importante diferenciar dos conceptos. La variable `prediccion_riesgo` corresponde a la clasificación técnica del modelo según el umbral definitivo de 0,77. En cambio, `banda_riesgo` corresponde a una priorización operativa por percentiles, diseñada para ordenar la cartera y facilitar la gestión.
+
+
+# Persistencia del scoring
+
+La tabla final de scoring se guarda en DuckDB dentro del esquema `mart_financiero` y también se exporta como CSV para consumo externo.
+
+```{python}
+#| label: persistir-scoring
+
+nombre_tabla_salida = "mart_financiero.scoring_riesgo_clientes"
+
+conexion.execute(
+    """
+    CREATE SCHEMA IF NOT EXISTS mart_financiero
+    """
+)
+
+conexion.register(
+    "scoring_temporal",
+    scoring
+)
+
+conexion.execute(
+    f"""
+    CREATE OR REPLACE TABLE {nombre_tabla_salida} AS
+    SELECT *
+    FROM scoring_temporal
+    """
+)
+
+ruta_tablas = raiz_proyecto / "reports" / "tables"
+ruta_tablas.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+ruta_csv_scoring = (
+    ruta_tablas
+    / "scoring_riesgo_clientes.csv"
+)
+
+scoring.to_csv(
+    ruta_csv_scoring,
+    index=False,
+    encoding="utf-8-sig"
+)
+
+validacion_persistencia = conexion.execute(
+    f"""
+    SELECT
+        COUNT(*) AS registros,
+        COUNT(DISTINCT id_cliente) AS clientes_unicos,
+        AVG(probabilidad_riesgo) AS probabilidad_promedio,
+        AVG(prediccion_riesgo) AS proporcion_riesgo_estimado
+    FROM {nombre_tabla_salida}
+    """
+).df()
+
+print("Tabla guardada en DuckDB:")
+print(nombre_tabla_salida)
+
+print("\nArchivo CSV exportado:")
+print(ruta_csv_scoring)
+
+validacion_persistencia
+```
+
+
+# Validaciones finales del scoring
+
+Se revisan los clientes con mayor probabilidad estimada y el comportamiento agregado por banda de riesgo.
+
+```{python}
+#| label: validacion-clientes-mayor-riesgo
+
+columnas_revision = [
+    "id_cliente",
+    "probabilidad_riesgo",
+    "prediccion_riesgo",
+    "banda_riesgo",
+    "flag_dificultad_pago",
+    "id_segmento",
+    "nombre_segmento",
+    "id_producto",
+    "nombre_producto",
+    "score_promedio_externo",
+    "score_externo_3",
+    "margen_esperado_producto",
+    "ingreso_total",
+    "monto_credito",
+    "monto_anualidad"
+]
+
+columnas_revision_disponibles = [
+    columna
+    for columna in columnas_revision
+    if columna in scoring.columns
+]
+
+clientes_mayor_riesgo = (
+    scoring[columnas_revision_disponibles]
+    .sort_values(
+        "probabilidad_riesgo",
+        ascending=False
+    )
+    .head(10)
+)
+
+clientes_mayor_riesgo
+```
+
+```{python}
+#| label: resumen-final-scoring
+
+resumen_final_scoring = (
+    scoring
+    .groupby("banda_riesgo", as_index=False)
+    .agg(
+        clientes=("id_cliente", "count"),
+        participacion_cartera=("id_cliente", lambda x: len(x) / len(scoring)),
+        probabilidad_minima=("probabilidad_riesgo", "min"),
+        probabilidad_promedio=("probabilidad_riesgo", "mean"),
+        probabilidad_maxima=("probabilidad_riesgo", "max"),
+        tasa_real_dificultad_pago=("flag_dificultad_pago", "mean"),
+        clientes_predichos_riesgo=("prediccion_riesgo", "sum")
+    )
+    .sort_values(
+        "probabilidad_promedio",
+        ascending=False
+    )
+)
+
+resumen_final_scoring
+```
+
+
+# Conclusiones del scoring operativo
+
+La Fase 8 permitió convertir el modelo predictivo en una tabla operativa de scoring para toda la cartera disponible.
+
+El modelo asignó una probabilidad estimada de dificultad de pago a 307.511 clientes. A partir del umbral definitivo de 0,77, se clasificaron 23.518 clientes como riesgo estimado, equivalentes al 7,65% de la cartera. Esta proporción es coherente con la tasa real de dificultad de pago observada en el conjunto de modelamiento, cercana al 8%.
+
+Además de la clasificación binaria, se construyeron bandas de riesgo por percentiles para priorizar la gestión de la cartera. La banda `Crítico`, correspondiente al 10% de clientes con mayor probabilidad estimada, concentra una tasa real de dificultad de pago cercana al 44%. Esto confirma que el modelo ordena adecuadamente a los clientes según su nivel de riesgo.
+
+La tabla final distingue entre dos conceptos complementarios. `prediccion_riesgo` representa la clasificación técnica del modelo según el umbral seleccionado, mientras que `banda_riesgo` representa una priorización operativa basada en percentiles. Esta separación permite usar el scoring tanto para evaluación técnica como para gestión comercial, financiera o preventiva.
+
+Finalmente, el scoring fue persistido en DuckDB como `mart_financiero.scoring_riesgo_clientes` y exportado como CSV en `reports/tables/scoring_riesgo_clientes.csv`, dejando la salida preparada para su integración posterior en Power BI.
