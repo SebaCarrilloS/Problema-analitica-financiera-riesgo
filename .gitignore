@@ -10,6 +10,10 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .ipynb_checkpoints/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Variables de entorno y credenciales
 .env
@@ -45,6 +49,8 @@ data/synthetic/corporate/*
 # Bases DuckDB locales
 *.duckdb
 *.duckdb.wal
+*.duckdb.tmp
+*.duckdb.tmp.*
 
 # Modelos entrenados
 models/*
