@@ -20,6 +20,13 @@ El objetivo del proyecto es construir una solución reproducible que permita:
 
 El proyecto combina técnicas de **Business Intelligence**, **Data Engineering**, **Machine Learning** e **interpretabilidad de modelos** aplicadas a un problema financiero realista.
 
+## Vista del dashboard
+
+A continuación se muestra una vista del resumen ejecutivo del dashboard desarrollado en Power BI:
+
+![Dashboard Resumen Ejecutivo](assets/dashboard_resumen_ejecutivo.png)
+
+
 ---
 
 ## 2. Problema de negocio
