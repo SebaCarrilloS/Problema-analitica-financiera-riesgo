@@ -500,3 +500,4 @@ Además de la clasificación binaria, se construyeron bandas de riesgo por perce
 La tabla final distingue entre dos conceptos complementarios. `prediccion_riesgo` representa la clasificación técnica del modelo según el umbral seleccionado, mientras que `banda_riesgo` representa una priorización operativa basada en percentiles. Esta separación permite usar el scoring tanto para evaluación técnica como para gestión comercial, financiera o preventiva.
 
 Finalmente, el scoring fue persistido en DuckDB como `mart_financiero.scoring_riesgo_clientes` y exportado como CSV en `reports/tables/scoring_riesgo_clientes.csv`, dejando la salida preparada para su integración posterior en Power BI.
+
