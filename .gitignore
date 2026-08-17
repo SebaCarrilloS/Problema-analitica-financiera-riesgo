@@ -65,6 +65,7 @@ reports/*.docx
 reports/**/*.html
 reports/**/*.pdf
 reports/**/*.docx
+reports/tables/scoring_riesgo_clientes.csv
 
 # Archivos temporales de Power BI
 powerbi/*.tmp
